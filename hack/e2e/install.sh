@@ -22,6 +22,8 @@ args=(--set image.repository=gitimage --set image.tag=e2e --set image.pullPolicy
 case "$ISOLATION" in
   privileged) args+=(--set buildPolicy.isolation.mode=privileged --set buildPolicy.isolation.allowPrivileged=true) ;;
   userns) args+=(--set buildPolicy.isolation.mode=userns) ;;
+  sysbox) args+=(--set buildPolicy.isolation.mode=runtimeClass --set buildPolicy.isolation.runtimeClassName=sysbox-runc
+                 --set buildPolicy.isolation.rootfulInSandbox=true) ;;
   kata*) args+=(--set buildPolicy.isolation.mode=runtimeClass --set buildPolicy.isolation.runtimeClassName="$ISOLATION"
                 --set buildPolicy.isolation.privilegedInSandbox=true) ;;
   *) args+=(--set buildPolicy.isolation.mode=runtimeClass --set buildPolicy.isolation.runtimeClassName="$ISOLATION") ;;

@@ -263,4 +263,39 @@ mod tests {
         );
         assert_eq!(check_key(&cfg).len(), 16);
     }
+
+    #[test]
+    fn sysbox_check_job_matches_the_build_pod() {
+        let cfg = Config::from_yaml(
+            "buildPolicy: { isolation: { mode: runtimeClass, runtimeClassName: sysbox-runc, rootfulInSandbox: true } }\nstorage: { type: registry, registry: { url: r, pushSecret: p } }\npushEndpoint: { host: h }",
+        )
+        .unwrap();
+        let j = check_job(&cfg, "gitimage-system");
+        let pod = j.spec.unwrap().template.spec.unwrap();
+        let mut build_pod = crate::job::build_job(
+            &crate::job::tests::gitimage(),
+            &cfg,
+            &crate::job::tests::params(),
+        )
+        .spec
+        .unwrap()
+        .template
+        .spec
+        .unwrap();
+        assert_eq!(pod.runtime_class_name, build_pod.runtime_class_name);
+        assert_eq!(pod.host_users, Some(false));
+        assert_eq!(pod.host_users, build_pod.host_users);
+        let (c, b) = (&pod.containers[0], build_pod.containers.remove(0));
+        assert_eq!(c.image, b.image);
+        assert_eq!(c.image.as_deref(), Some("moby/buildkit:v0.34.2"));
+        assert_eq!(c.security_context, b.security_context);
+        assert_eq!(
+            c.volume_mounts.as_ref().unwrap()[0].mount_path,
+            "/var/lib/buildkit"
+        );
+        // A different isolation setting must not reuse a cached check result.
+        let mut other = cfg.clone();
+        other.build_policy.isolation.rootful_in_sandbox = false;
+        assert_ne!(check_key(&cfg), check_key(&other));
+    }
 }

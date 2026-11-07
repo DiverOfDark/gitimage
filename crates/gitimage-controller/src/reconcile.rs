@@ -285,7 +285,9 @@ async fn pod_creation_failure(ctx: &Ctx, ns: &str, job: &Job) -> Option<String> 
         .next_back()
         .map(|m| {
             if m.contains("PodSecurity") {
-                format!("{m}. Build pods need the namespace label pod-security.kubernetes.io/enforce=privileged")
+                let level = ctx.config.build_policy.isolation.pod_security_level();
+                // Hint first: the message is truncated, and admission messages can be long.
+                format!("Build pods need the namespace label pod-security.kubernetes.io/enforce={level}: {m}")
             } else {
                 m
             }
