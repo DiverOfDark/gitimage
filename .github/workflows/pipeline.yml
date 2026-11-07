@@ -193,13 +193,21 @@ jobs:
           echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
           helm package charts/gitimage -d dist
           helm push "dist/gitimage-$VERSION.tgz" oci://ghcr.io/diverofdark/charts
+      - name: Release assets
+        run: cd dist && for a in amd64 arm64; do tar -czf "gitimage-$VERSION-linux-$a.tar.gz" "gitimage-$a"; done
+      # An action, not the gh CLI: self-hosted runner images do not ship gh.
       - name: GitHub release
-        env: { GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}" }
-        run: |
-          cd dist && for a in amd64 arm64; do tar -czf "gitimage-$VERSION-linux-$a.tar.gz" "gitimage-$a"; done
-          gh release create "v$VERSION" --target "${{ github.sha }}" --title "v$VERSION" --generate-notes \
-            --notes "Image: \`$IMAGE:$VERSION\` (\`${{ steps.image.outputs.digest }}\`, cosign-signed). Chart: \`helm install gitimage oci://ghcr.io/diverofdark/charts/gitimage --version $VERSION\`" \
-            "gitimage-$VERSION-linux-amd64.tar.gz" "gitimage-$VERSION-linux-arm64.tar.gz" "gitimage-$VERSION.tgz"
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.VERSION }}
+          target_commitish: ${{ github.sha }}
+          name: v${{ env.VERSION }}
+          generate_release_notes: true
+          body: "Image: `${{ env.IMAGE }}:${{ env.VERSION }}` (`${{ steps.image.outputs.digest }}`, cosign-signed). Chart: `helm install gitimage oci://ghcr.io/diverofdark/charts/gitimage --version ${{ env.VERSION }}`"
+          files: |
+            dist/gitimage-${{ env.VERSION }}-linux-amd64.tar.gz
+            dist/gitimage-${{ env.VERSION }}-linux-arm64.tar.gz
+            dist/gitimage-${{ env.VERSION }}.tgz
 
   docs:
     needs: [version, release]
