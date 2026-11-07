@@ -33,7 +33,11 @@ case "$STORAGE" in
              --set storage.s3.secret=s3-creds --set storage.s3.pathStyle=true) ;;
 esac
 bkcfg=$(mktemp); trap 'rm -f "$bkcfg"' EXIT
-printf '[registry."docker.io"]\n  mirrors = ["e2e-mirror:5000"]\n\n[registry."e2e-mirror:5000"]\n  http = true\n' > "$bkcfg"
+if [ -n "${E2E_DOCKERHUB_PREFIX:-}" ]; then
+  printf '[registry."docker.io"]\n  mirrors = ["%s"]\n' "${E2E_DOCKERHUB_PREFIX%/}" > "$bkcfg"
+else
+  printf '[registry."docker.io"]\n  mirrors = ["e2e-mirror:5000"]\n\n[registry."e2e-mirror:5000"]\n  http = true\n' > "$bkcfg"
+fi
 args+=(--set-file build.buildkitdConfig="$bkcfg")
 helm upgrade --install gitimage charts/gitimage -n "$NS" "${args[@]}"
 kubectl -n "$NS" rollout restart deploy/gitimage-controller deploy/gitimage-webhook >/dev/null

@@ -14,6 +14,9 @@ Runners: the repository variable `RUNS_ON` names a self-hosted runner label for 
 (`E2E_RUNS_ON` overrides it for e2e only); unset means GitHub-hosted. Pull requests from forks
 always use GitHub-hosted runners, and arm64 builds always use GitHub's arm runner.
 `E2E_ISOLATIONS` (JSON list) adds `kata-qemu` where runners have `/dev/kvm`;
+`DOCKERHUB_PREFIX` (e.g. `harbor.example.com/docker-hub/`) makes self-hosted jobs pull every
+Docker Hub image through a path-style proxy cache: job containers, kind's node image, the e2e
+helpers, containerd in kind (`hosts.toml` with `override_path`) and BuildKit (`mirrors`).
 `E2E_GITHUB_ISOLATIONS` (JSON list) keeps some isolations on GitHub-hosted runners — gVisor and
 rootless BuildKit need user namespaces, which Talos disables by default
 (`user.max_user_namespaces=0`).
