@@ -37,7 +37,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: EmbarkStudios/cargo-deny-action@v2
+      # The container action cannot use rust-toolchain.toml; run the binary on the host.
+      - uses: taiki-e/install-action@v2
+        with: { tool: cargo-deny }
+      - run: cargo deny check
   image:
     runs-on: ubuntu-latest
     needs: check

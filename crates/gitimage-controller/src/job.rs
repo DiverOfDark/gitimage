@@ -698,7 +698,7 @@ network: { clusterCIDRs: [10.244.0.0/16, "fd00::/48"] }
     }
 
     pub(crate) fn gitimage() -> GitImage {
-        let spec: GitImageSpec = serde_yaml::from_str(
+        let spec: GitImageSpec = serde_saphyr::from_str(
             r#"
 url: https://user@github.com/you/myapp.git
 secretRef: { name: myapp-git }

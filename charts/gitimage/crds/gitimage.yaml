@@ -37,7 +37,7 @@ spec:
             properties:
               build:
                 default:
-                  context: .
+                  context: '.'
                   dockerfile: Dockerfile
                   onNewCommit: wait
                 properties:
@@ -70,8 +70,10 @@ spec:
                       use `secrets` for real secrets.
                     type: object
                   context:
-                    default: .
-                    description: Working directory relative to the repo root; also the path F7 watches for changes.
+                    default: '.'
+                    description: >-
+                      Working directory relative to the repo root; also the path F7 watches for
+                      changes.
                     type: string
                   dockerfile:
                     default: Dockerfile
@@ -128,7 +130,9 @@ spec:
                 type: string
               ref:
                 default: main
-                description: Branch, tag or full commit sha; `refs/heads/...` or `refs/tags/...` to disambiguate.
+                description: >-
+                  Branch, tag or full commit sha; `refs/heads/...` or `refs/tags/...` to
+                  disambiguate.
                 type: string
               secretRef:
                 description: |-
@@ -159,7 +163,7 @@ spec:
                       nullable: true
                       type: string
                     digest:
-                      description: '`sha256:...`; absent for a superseded build.'
+                      description: "`sha256:...`; absent for a superseded build."
                       nullable: true
                       type: string
                     finishedAt:
@@ -180,7 +184,7 @@ spec:
                       description: The commit.
                       type: string
                     sourceRevision:
-                      description: 'F7: the older commit whose image this one reuses.'
+                      description: "F7: the older commit whose image this one reuses."
                       nullable: true
                       type: string
                   required:
@@ -205,7 +209,7 @@ spec:
                     reason:
                       type: string
                     status:
-                      description: '`True`, `False` or `Unknown`.'
+                      description: "`True`, `False` or `Unknown`."
                       type: string
                     type:
                       type: string
@@ -228,7 +232,7 @@ spec:
                 nullable: true
                 type: string
               image:
-                description: '`<host>/<ns>/<name>@sha256:...`'
+                description: "`<host>/<ns>/<name>@sha256:...`"
                 nullable: true
                 type: string
               latestRevision:

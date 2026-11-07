@@ -288,7 +288,7 @@ mod tests {
     }
 
     fn pod(yaml: &str) -> Pod {
-        serde_yaml::from_str(yaml).unwrap()
+        serde_saphyr::from_str(yaml).unwrap()
     }
 
     fn web_pod(extra_ann: &str) -> Pod {
@@ -311,7 +311,7 @@ spec:
     fn built() -> GitImage {
         let mut gi = GitImage::new(
             "myapp",
-            serde_yaml::from_str::<GitImageSpec>("url: x").unwrap(),
+            serde_saphyr::from_str::<GitImageSpec>("url: x").unwrap(),
         );
         gi.status = Some(GitImageStatus {
             revision: Some("bbb".into()),

@@ -4,10 +4,22 @@ all-features = false
 [advisories]
 version = 2
 yanked = "deny"
+ignore = [
+  # Marvin attack: RSA *decryption* timing. GitImage only signs with RSA (ssh client auth
+  # through russh; jsonwebtoken's rust_crypto backend is compiled in but only HS256 is used).
+  # No fixed rsa release exists.
+  { id = "RUSTSEC-2023-0071", reason = "RSA used only for ssh client signatures; no decryption; no fix available" },
+  # crypto-bigint 0.5 timing variability, via p256/p384 0.13 (ssh ECDSA client keys). The
+  # fixed 0.7 line needs p256 0.14, which russh's ssh-key does not use yet.
+  { id = "RUSTSEC-2026-0387", reason = "ECDSA used only for ssh client signatures in short-lived processes; awaiting ssh-key upgrade" },
+]
 
 [licenses]
 version = 2
-allow = ["Apache-2.0", "MIT", "BSD-2-Clause", "BSD-3-Clause", "ISC", "Unicode-3.0", "Zlib", "CDLA-Permissive-2.0", "MPL-2.0", "OpenSSL", "Unlicense"]
+allow = [
+  "Apache-2.0", "Apache-2.0 WITH LLVM-exception", "MIT", "BSD-2-Clause", "BSD-3-Clause",
+  "ISC", "Unicode-3.0", "Zlib", "CDLA-Permissive-2.0", "MPL-2.0",
+]
 
 [bans]
 multiple-versions = "allow"

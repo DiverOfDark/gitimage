@@ -246,7 +246,7 @@ impl Gitea {
 
 /// Creates a GitImage from a YAML spec.
 pub async fn create_gitimage(ns: &TestNs, name: &str, spec_yaml: &str) -> anyhow::Result<GitImage> {
-    let spec: GitImageSpec = serde_yaml::from_str(spec_yaml)?;
+    let spec: GitImageSpec = serde_saphyr::from_str(spec_yaml)?;
     let mut gi = GitImage::new(name, spec);
     gi.metadata.namespace = Some(ns.name.clone());
     Ok(ns

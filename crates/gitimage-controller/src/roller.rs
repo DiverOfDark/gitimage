@@ -118,7 +118,7 @@ mod tests {
 
     #[test]
     fn finds_unpinned_and_outdated_containers() {
-        let t: PodTemplateSpec = serde_yaml::from_str(
+        let t: PodTemplateSpec = serde_saphyr::from_str(
             r#"
 metadata:
   annotations:

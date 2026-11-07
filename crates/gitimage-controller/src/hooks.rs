@@ -83,7 +83,7 @@ mod tests {
     fn gi(ns: &str, name: &str, url: &str, token: Option<&str>) -> Arc<GitImage> {
         let mut g = GitImage::new(
             name,
-            serde_yaml::from_str::<GitImageSpec>(&format!("url: {url}")).unwrap(),
+            serde_saphyr::from_str::<GitImageSpec>(&format!("url: {url}")).unwrap(),
         );
         g.metadata.namespace = Some(ns.into());
         g.status = Some(GitImageStatus {

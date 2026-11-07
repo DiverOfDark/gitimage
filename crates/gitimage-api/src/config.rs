@@ -11,7 +11,7 @@ use crate::gitimage::Resources;
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
     #[error("config.yaml: {0}")]
-    Parse(#[from] serde_yaml::Error),
+    Parse(#[from] serde_saphyr::Error),
     #[error("config.yaml: {0}")]
     Invalid(String),
 }
@@ -53,7 +53,7 @@ pub struct ControllerSettings {
 
 impl Config {
     pub fn from_yaml(s: &str) -> Result<Self, ConfigError> {
-        let cfg: Self = serde_yaml::from_str(s)?;
+        let cfg: Self = serde_saphyr::from_str(s)?;
         cfg.validate()?;
         Ok(cfg)
     }

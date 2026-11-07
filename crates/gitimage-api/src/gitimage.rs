@@ -286,7 +286,7 @@ mod tests {
     #[test]
     fn defaults_fill_a_minimal_spec() {
         let spec: GitImageSpec =
-            serde_yaml::from_str("url: https://github.com/you/myapp.git").unwrap();
+            serde_saphyr::from_str("url: https://github.com/you/myapp.git").unwrap();
         assert_eq!(spec.git_ref, "main");
         assert_eq!(spec.interval(), std::time::Duration::from_secs(300));
         assert_eq!(spec.build.context, ".");
@@ -296,7 +296,7 @@ mod tests {
 
     #[test]
     fn unknown_fields_are_rejected() {
-        let err = serde_yaml::from_str::<GitImageSpec>("url: x\nrawArgs: [--output]")
+        let err = serde_saphyr::from_str::<GitImageSpec>("url: x\nrawArgs: [--output]")
             .unwrap_err()
             .to_string();
         assert!(err.contains("rawArgs"), "{err}");
@@ -304,7 +304,7 @@ mod tests {
 
     #[test]
     fn prd_example_parses() {
-        let spec: GitImageSpec = serde_yaml::from_str(
+        let spec: GitImageSpec = serde_saphyr::from_str(
             r#"
 url: git@github.com:you/myapp.git
 ref: main

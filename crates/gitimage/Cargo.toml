@@ -18,7 +18,7 @@ gitimage-oci = { workspace = true }
 gitimage-tls = { workspace = true }
 gitimage-webhook = { workspace = true }
 kube = { workspace = true }
-serde_yaml = { workspace = true }
+serde-saphyr = { workspace = true }
 clap = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

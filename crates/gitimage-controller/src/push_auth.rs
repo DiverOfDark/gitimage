@@ -89,7 +89,7 @@ mod tests {
     use kube::runtime::watcher;
 
     fn job(uid: &str, ns: &str, name: &str, done: bool) -> Job {
-        serde_yaml::from_str(&format!(
+        serde_saphyr::from_str(&format!(
             "metadata: {{ uid: {uid}, name: {uid}, namespace: {ns}, labels: {{ gitimage.dev/name: {name} }} }}\nstatus: {{ succeeded: {} }}",
             if done { 1 } else { 0 }
         ))

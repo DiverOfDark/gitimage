@@ -246,7 +246,7 @@ mod tests {
 
     #[test]
     fn in_use_from_spec_and_status() {
-        let pod: Pod = serde_yaml::from_str(&format!(
+        let pod: Pod = serde_saphyr::from_str(&format!(
             r#"
 spec: {{ containers: [ {{ name: web, image: "localhost:25050/team-a/myapp@{A}" }} ] }}
 status: {{ containerStatuses: [ {{ name: web, image: x, imageID: "localhost:25050/team-a/myapp@{B}", ready: true, restartCount: 0 }} ] }}
