@@ -1,4 +1,7 @@
 # One pipeline: checks -> one cached build -> e2e matrix -> (main only) release + docs.
+# Runners: repository variable RUNS_ON (e.g. the homelab scale set `gitimage-e2e`) for every
+# job, GitHub-hosted when unset. Pull requests from forks always use GitHub-hosted runners, so
+# outside code never runs on self-hosted hardware. arm64 builds always use GitHub's arm runner.
 # A push to main is released as v<major>.<minor>.<run number> only when every check and every
 # e2e job passed.
 name: pipeline
@@ -21,7 +24,7 @@ env:
 
 jobs:
   version:
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || vars.RUNS_ON || 'ubuntu-latest' }}
     outputs:
       version: ${{ steps.v.outputs.version }}
       release: ${{ steps.v.outputs.release }}
@@ -39,7 +42,7 @@ jobs:
           fi
 
   check:
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || vars.RUNS_ON || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -57,7 +60,7 @@ jobs:
       - run: cargo deny check
 
   oci-conformance:
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || vars.RUNS_ON || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -75,9 +78,10 @@ jobs:
     strategy:
       matrix:
         include:
-          - { arch: amd64, runner: ubuntu-24.04 }
-          - { arch: arm64, runner: ubuntu-24.04-arm }
-    runs-on: ${{ matrix.runner }}
+          - { arch: amd64 }
+          - { arch: arm64 }
+    # arm64 always builds on GitHub's arm runner (no arm nodes on the homelab).
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-24.04' || vars.RUNS_ON || 'ubuntu-24.04' }}
     container: rust:1.99-bookworm
     env:
       GITIMAGE_VERSION: ${{ needs.version.outputs.version }}
@@ -98,9 +102,8 @@ jobs:
 
   e2e:
     needs: build
-    # Homelab runners (repo variable E2E_RUNS_ON) for this repo's own branches; pull requests
-    # from forks always run on GitHub-hosted runners.
-    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || vars.E2E_RUNS_ON || 'ubuntu-latest' }}
+    # E2E_RUNS_ON can send only e2e elsewhere; otherwise the same runner as every job.
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || vars.E2E_RUNS_ON || vars.RUNS_ON || 'ubuntu-latest' }}
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -137,7 +140,7 @@ jobs:
   release:
     needs: [version, check, oci-conformance, build, e2e]
     if: needs.version.outputs.release == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || vars.RUNS_ON || 'ubuntu-latest' }}
     permissions:
       contents: write
       packages: write
@@ -189,7 +192,7 @@ jobs:
   docs:
     needs: [version, release]
     if: needs.version.outputs.release == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || vars.RUNS_ON || 'ubuntu-latest' }}
     permissions:
       pages: write
       id-token: write

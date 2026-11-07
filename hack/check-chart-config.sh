@@ -7,8 +7,9 @@ bin=${GITIMAGE_BIN:-target/debug/gitimage}
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 check() {
-  helm template t charts/gitimage -n gitimage-system "$@" \
-    | python3 -c 'import sys,yaml; [print(d["data"]["config.yaml"]) for d in yaml.safe_load_all(sys.stdin) if d and d.get("kind")=="ConfigMap" and d["metadata"]["name"]=="gitimage-config"]' \
+  # The literal block under `config.yaml: |`, de-indented (no yq/PyYAML needed).
+  helm template t charts/gitimage -n gitimage-system --show-only templates/configmap.yaml "$@" \
+    | awk '/^  config.yaml: \|/ {on=1; next} on && /^    / {print substr($0, 5); next} on && !/^    / && NF {on=0}' \
     > "$tmp/config.yaml"
   "$bin" check-config --config "$tmp/config.yaml"
 }

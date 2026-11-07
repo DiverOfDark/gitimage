@@ -10,6 +10,7 @@ release:
 - a GitHub release with binaries and notes;
 - this documentation, published to GitHub Pages.
 
-The e2e jobs run on self-hosted runners when the repository variable `E2E_RUNS_ON` names
-their label (pull requests from forks always use GitHub-hosted runners); `E2E_ISOLATIONS`
-(JSON list) adds `kata-qemu` where runners have `/dev/kvm`.
+Runners: the repository variable `RUNS_ON` names a self-hosted runner label for every job
+(`E2E_RUNS_ON` overrides it for e2e only); unset means GitHub-hosted. Pull requests from forks
+always use GitHub-hosted runners, and arm64 builds always use GitHub's arm runner.
+`E2E_ISOLATIONS` (JSON list) adds `kata-qemu` where runners have `/dev/kvm`.
