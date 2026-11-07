@@ -151,17 +151,21 @@ impl Gitea {
         files: &[(&str, &str)],
         message: &str,
     ) -> anyhow::Result<String> {
-        let existing = self.tree_paths(repo, branch).await.unwrap_or_default();
+        let existing = self.tree(repo, branch).await.unwrap_or_default();
         let ops: Vec<serde_json::Value> = files
             .iter()
             .map(|(path, content)| {
+                let sha = existing
+                    .iter()
+                    .find(|(p, _)| p == path)
+                    .map(|(_, s)| s.clone());
                 let mut op = json!({
-                    "operation": if existing.contains(&path.to_string()) { "update" } else { "create" },
+                    "operation": if sha.is_some() { "update" } else { "create" },
                     "path": path,
                     "content": base64::engine::general_purpose::STANDARD.encode(content),
                 });
-                if existing.contains(&path.to_string()) {
-                    op["sha"] = json!(existing_sha(&existing, path));
+                if let Some(sha) = sha {
+                    op["sha"] = json!(sha);
                 }
                 op
             })
@@ -191,7 +195,8 @@ impl Gitea {
             .context("no commit sha in response")
     }
 
-    async fn tree_paths(&self, repo: &str, branch: &str) -> anyhow::Result<Vec<String>> {
+    /// (path, blob sha) of every file on `branch`; empty for a new repo.
+    async fn tree(&self, repo: &str, branch: &str) -> anyhow::Result<Vec<(String, String)>> {
         let r = self
             .auth(self.http.get(format!(
                 "{GITEA}/api/v1/repos/{GITEA_USER}/{repo}/git/trees/{branch}?recursive=true"
@@ -208,10 +213,9 @@ impl Gitea {
                 a.iter()
                     .filter(|e| e["type"] == "blob")
                     .map(|e| {
-                        format!(
-                            "{}\u{0}{}",
-                            e["path"].as_str().unwrap_or(""),
-                            e["sha"].as_str().unwrap_or("")
+                        (
+                            e["path"].as_str().unwrap_or("").to_string(),
+                            e["sha"].as_str().unwrap_or("").to_string(),
                         )
                     })
                     .collect()
@@ -236,28 +240,6 @@ impl Gitea {
 
     pub fn https_url(repo: &str) -> String {
         format!("{GITEA_IN_CLUSTER}/{GITEA_USER}/{repo}.git")
-    }
-}
-
-// `tree_paths` packs "path\0sha"; these helpers read it back.
-fn existing_sha(existing: &[String], path: &str) -> String {
-    existing
-        .iter()
-        .find_map(|e| {
-            e.split_once('\u{0}')
-                .filter(|(p, _)| *p == path)
-                .map(|(_, s)| s.to_string())
-        })
-        .unwrap_or_default()
-}
-
-trait ContainsPath {
-    fn contains(&self, path: &String) -> bool;
-}
-impl ContainsPath for Vec<String> {
-    fn contains(&self, path: &String) -> bool {
-        self.iter()
-            .any(|e| e.split_once('\u{0}').is_some_and(|(p, _)| p == path))
     }
 }
 
@@ -308,7 +290,7 @@ pub async fn create_deployment(
             "template": {
                 "metadata": {
                     "labels": { "app": name },
-                    "annotations": { format!("gitimage.dev/image.web"): gitimage }
+                    "annotations": { "gitimage.dev/image.web": gitimage }
                 },
                 "spec": {
                     "terminationGracePeriodSeconds": 1,

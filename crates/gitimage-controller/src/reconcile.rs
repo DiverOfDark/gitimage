@@ -527,7 +527,8 @@ pub async fn reconcile(gi: Arc<GitImage>, ctx: Arc<Ctx>) -> Result<Action, Error
 
     // Retry of a failed build.
     let rebuild = gi.annotations().get(keys::REBUILD_ANNOTATION).cloned();
-    if rebuild.is_some() && rebuild != status.handled_rebuild {
+    let rebuild_requested = rebuild.is_some() && rebuild != status.handled_rebuild;
+    if rebuild_requested {
         status.builds.retain(|b| b.outcome != BuildOutcome::Failed);
         status.handled_rebuild = rebuild;
     }
@@ -664,6 +665,24 @@ pub async fn reconcile(gi: Arc<GitImage>, ctx: Arc<Ctx>) -> Result<Action, Error
                 follow_job(&ctx, &gi, j);
                 building = true;
                 set_building(&ctx, &mut status, j, generation, &sha);
+            }
+            // A rebuild request: the finished Job stays until its TTL, so start a new attempt.
+            Some(j) if rebuild_requested => {
+                let skip = j.annotations().get("gitimage.dev/skip-if-tree").cloned();
+                match start_build(&ctx, &gi, &sha, job_attempt(j) + 1, skip).await? {
+                    Ok(job) => {
+                        building = true;
+                        set_building(&ctx, &mut status, &job, generation, &sha)
+                    }
+                    Err(msg) => set_condition(
+                        &mut status.conditions,
+                        cond::FAILED,
+                        true,
+                        fail::SECRET_MISSING,
+                        &msg,
+                        generation,
+                    ),
+                }
             }
             Some(j) => match inspect_finished(&ctx, &gi, &status, j, &sha).await {
                 Finished::Record(rec) => {
