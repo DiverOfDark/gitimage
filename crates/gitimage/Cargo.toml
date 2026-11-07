@@ -11,6 +11,12 @@ path = "src/main.rs"
 
 [dependencies]
 gitimage-api = { workspace = true }
+gitimage-controller = { workspace = true }
+gitimage-git = { workspace = true }
+gitimage-node = { workspace = true }
+gitimage-oci = { workspace = true }
+gitimage-tls = { workspace = true }
+gitimage-webhook = { workspace = true }
 kube = { workspace = true }
 serde_yaml = { workspace = true }
 clap = { workspace = true }

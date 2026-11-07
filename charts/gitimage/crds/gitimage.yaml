@@ -170,6 +170,11 @@ spec:
                       - Built
                       - Reused
                       - Superseded
+                      - Failed
+                      type: string
+                    reason:
+                      description: Failure reason for `Failed` records, e.g. `BuildFailed`.
+                      nullable: true
                       type: string
                     revision:
                       description: The commit.
@@ -210,6 +215,14 @@ spec:
                   - type
                   type: object
                 type: array
+              handledHookAt:
+                description: Last `gitimage.dev/hook-at` value acted on (debounce).
+                nullable: true
+                type: string
+              handledRebuild:
+                description: Last `gitimage.dev/rebuild` value acted on.
+                nullable: true
+                type: string
               hookTokenHash:
                 description: sha256 of the hook token; every replica's hooks receiver indexes on it.
                 nullable: true

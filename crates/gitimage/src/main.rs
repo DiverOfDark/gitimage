@@ -3,7 +3,10 @@
 use std::path::PathBuf;
 
 use anyhow::Context;
-use clap::{Parser, Subcommand, ValueEnum};
+use std::net::SocketAddr;
+
+use clap::{Args, Parser, Subcommand, ValueEnum};
+use gitimage_api::Config;
 use kube::CustomResourceExt;
 
 #[derive(Parser)]
@@ -42,11 +45,11 @@ enum LogFormat {
 #[derive(Subcommand)]
 enum Command {
     /// Reconcilers, push endpoint, hooks receiver.
-    Controller,
+    Controller(ControllerArgs),
     /// Mutating admission webhook.
-    Webhook,
+    Webhook(WebhookArgs),
     /// Read-only OCI server on 127.0.0.1 for s3 storage mode.
-    Node,
+    Node(NodeArgs),
     /// Init container of a build Job: fetch one commit and check it out.
     Clone,
     /// Print the CRD YAML (or write it to --out).
@@ -56,6 +59,65 @@ enum Command {
     },
     /// Print the version.
     Version,
+}
+
+#[derive(Args)]
+struct ControllerArgs {
+    #[arg(long, default_value = "/etc/gitimage/config.yaml")]
+    config: PathBuf,
+    #[arg(long, env = "POD_NAMESPACE", default_value = "gitimage-system")]
+    namespace: String,
+    #[arg(long, env = "POD_NAME", default_value = "gitimage-controller")]
+    pod_name: String,
+    #[arg(long, env = "POD_IP", default_value = "127.0.0.1")]
+    pod_ip: String,
+    #[arg(long, default_value = "/etc/gitimage/push-tls")]
+    push_cert_dir: PathBuf,
+    #[arg(long, default_value = "0.0.0.0:5000")]
+    push_addr: SocketAddr,
+    #[arg(long, default_value = "0.0.0.0:8080")]
+    hooks_addr: SocketAddr,
+    #[arg(long, default_value = "0.0.0.0:8081")]
+    ops_addr: SocketAddr,
+}
+
+#[derive(Args)]
+struct WebhookArgs {
+    #[arg(long, default_value = "/etc/gitimage/config.yaml")]
+    config: PathBuf,
+    #[arg(long, default_value = "/etc/gitimage/webhook-tls")]
+    cert_dir: PathBuf,
+    #[arg(long, default_value = "0.0.0.0:8443")]
+    addr: SocketAddr,
+    #[arg(long, default_value = "0.0.0.0:8081")]
+    health_addr: SocketAddr,
+}
+
+#[derive(Args)]
+struct NodeArgs {
+    #[arg(long, default_value = "/etc/gitimage/config.yaml")]
+    config: PathBuf,
+    /// Read-only S3 credentials.
+    #[arg(long, env = "AWS_ACCESS_KEY_ID", hide_env_values = true)]
+    access_key: String,
+    #[arg(long, env = "AWS_SECRET_ACCESS_KEY", hide_env_values = true)]
+    secret_key: String,
+}
+
+fn load_config(path: &PathBuf) -> anyhow::Result<Config> {
+    let raw =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    Ok(Config::from_yaml(&raw)?)
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = tokio::signal::ctrl_c();
+    let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .expect("SIGTERM handler");
+    tokio::select! {
+        _ = ctrl_c => {}
+        _ = term.recv() => {}
+    }
 }
 
 fn init_logging(format: LogFormat, level: &str) -> anyhow::Result<()> {
@@ -102,15 +164,58 @@ async fn main() -> anyhow::Result<()> {
         _ => {}
     }
     init_logging(cli.log_format, &cli.log_level)?;
-    let name = match cli.command {
-        Command::Controller => "controller",
-        Command::Webhook => "webhook",
-        Command::Node => "node",
-        Command::Clone => "clone",
+    gitimage_tls::install_crypto_provider();
+    match cli.command {
+        Command::Controller(a) => {
+            gitimage_controller::run(gitimage_controller::Settings {
+                config_path: a.config,
+                namespace: a.namespace,
+                pod_name: a.pod_name,
+                pod_ip: a.pod_ip,
+                push_cert_dir: a.push_cert_dir,
+                push_addr: a.push_addr,
+                hooks_addr: a.hooks_addr,
+                ops_addr: a.ops_addr,
+            })
+            .await
+        }
+        Command::Webhook(a) => {
+            let cfg = load_config(&a.config)?;
+            let mutate = gitimage_webhook::MutateConfig {
+                pull_host: cfg.pull_host(),
+                push_authority: cfg.push_endpoint.authority(),
+                pull_secret: cfg
+                    .storage
+                    .registry
+                    .as_ref()
+                    .and_then(|r| r.pull_secret.as_ref())
+                    .map(|_| "gitimage-pull".to_string()),
+            };
+            let client = kube::Client::try_default().await?;
+            gitimage_webhook::run(
+                client,
+                mutate,
+                a.addr,
+                a.health_addr,
+                a.cert_dir,
+                shutdown_signal(),
+            )
+            .await
+        }
+        Command::Node(a) => {
+            let cfg = load_config(&a.config)?;
+            let s3 = cfg
+                .storage
+                .s3
+                .as_ref()
+                .context("gitimage node runs only with storage.type s3")?;
+            let storage = gitimage_oci::S3Storage::new(s3, a.access_key, a.secret_key)?;
+            let _ = storage; // MERGE-TODO: gitimage_node::serve(Arc::new(storage), cfg.node.port, cfg.node.health_port, shutdown_signal())
+            anyhow::bail!("gitimage node: not wired yet")
+        }
+        Command::Clone => anyhow::bail!("gitimage clone: not wired yet"), // MERGE-TODO: gitimage_git::run_clone_cli
         Command::Crdgen { .. } | Command::Version => unreachable!(),
-    };
-    tracing::error!(subcommand = name, "not implemented yet");
-    std::process::exit(2)
+    }
 }
 
 #[cfg(test)]
