@@ -174,6 +174,11 @@ pub trait Storage: Send + Sync + 'static {
     /// Finishes the upload; fails with `DigestInvalid` if the content's sha256 differs.
     async fn commit(&self, id: &UploadId, d: &Digest) -> Result<(), OciError>;
     async fn abort(&self, id: &UploadId) -> Result<(), OciError>;
+    /// Bytes received so far by an open upload, for upload status and chunk offsets.
+    /// The default appends an empty chunk; the bundled backends override it with a lookup.
+    async fn upload_size(&self, id: &UploadId) -> Result<u64, OciError> {
+        self.append(id, Box::pin(futures::stream::empty())).await
+    }
     /// Cross-repo mount within this storage; `Ok(false)` if not supported or not found.
     async fn mount_blob(&self, from: &Repo, to: &Repo, d: &Digest) -> Result<bool, OciError>;
     async fn delete_blob(&self, repo: &Repo, d: &Digest) -> Result<(), OciError>;
@@ -197,10 +202,28 @@ pub trait Storage: Send + Sync + 'static {
 
 pub type DynStorage = Arc<dyn Storage>;
 
+/// OCI image manifest.
+pub const OCI_MANIFEST: &str = "application/vnd.oci.image.manifest.v1+json";
+/// OCI image index.
+pub const OCI_INDEX: &str = "application/vnd.oci.image.index.v1+json";
+/// Docker image manifest, schema 2.
+pub const DOCKER_MANIFEST: &str = "application/vnd.docker.distribution.manifest.v2+json";
+/// Docker manifest list.
+pub const DOCKER_MANIFEST_LIST: &str = "application/vnd.docker.distribution.manifest.list.v2+json";
+/// Manifest media types accepted on push and requested from upstream registries.
+pub const MANIFEST_MEDIA_TYPES: [&str; 4] = [
+    OCI_MANIFEST,
+    OCI_INDEX,
+    DOCKER_MANIFEST,
+    DOCKER_MANIFEST_LIST,
+];
+
 mod memory;
 mod registry;
 mod routes;
 mod s3;
+#[cfg(test)]
+mod storage_tests;
 
 pub use memory::MemoryStorage;
 pub use registry::RegistryStorage;
