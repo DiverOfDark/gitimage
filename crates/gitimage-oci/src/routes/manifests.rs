@@ -35,7 +35,8 @@ pub(super) async fn get(
     reference: &str,
     head: bool,
 ) -> Result<Response, ApiError> {
-    let r = Reference::parse(reference)?;
+    // A malformed reference cannot name anything stored: unknown, not invalid.
+    let r = Reference::parse(reference).map_err(|_| OciError::ManifestUnknown)?;
     let m = storage
         .get_manifest(repo, &r)
         .await?
