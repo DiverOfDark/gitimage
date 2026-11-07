@@ -7,6 +7,7 @@ mod refs;
 
 pub use credentials::{Credentials, CredentialsError};
 pub use gix_client::GixClient;
+
 pub use refs::{RemoteRef, ResolveError, Resolved, is_full_sha, ls_refs_prefixes, resolve};
 
 #[derive(Debug, thiserror::Error)]
@@ -29,4 +30,42 @@ pub trait GitClient: Send + Sync {
         creds: &Credentials,
         wanted: &str,
     ) -> impl std::future::Future<Output = Result<Vec<RemoteRef>, GitError>> + Send;
+
+    /// Fetches `sha` at depth 1 into a new repo at `dest` and reads the git tree id of
+    /// `context` (repo-relative, "." = root). If it equals `skip_if_tree`, returns
+    /// `unchanged: true` without checking out. Otherwise checks the commit's tree out into
+    /// `dest` (worktree files only; `.git` may be removed after).
+    fn clone_commit(
+        &self,
+        req: CloneRequest,
+    ) -> impl std::future::Future<Output = Result<CloneOutcome, GitError>> + Send;
+
+    /// Tree id of `context` at `sha` through the git host's HTTP API (GitHub, GitLab,
+    /// Gitea/Forgejo) with https credentials, without cloning. `Ok(None)` when the host is
+    /// unknown, the URL is ssh, or the API is unavailable: the caller then falls back to the
+    /// in-Job check (`clone_commit` with `skip_if_tree`).
+    fn context_tree_via_host(
+        &self,
+        url: &str,
+        creds: &Credentials,
+        sha: &str,
+        context: &str,
+    ) -> impl std::future::Future<Output = Result<Option<String>, GitError>> + Send;
+}
+
+#[derive(Clone, Debug)]
+pub struct CloneRequest {
+    pub url: String,
+    pub creds: Credentials,
+    pub sha: String,
+    pub dest: std::path::PathBuf,
+    pub context: String,
+    pub skip_if_tree: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CloneOutcome {
+    /// Git tree id of `context` at `sha`.
+    pub context_tree: String,
+    pub unchanged: bool,
 }

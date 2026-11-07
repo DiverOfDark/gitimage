@@ -25,6 +25,23 @@ impl GitClient for GixClient {
             .await
             .map_err(|e| GitError::Remote(format!("ls-refs task: {e}")))?
     }
+
+    async fn clone_commit(
+        &self,
+        _req: crate::CloneRequest,
+    ) -> Result<crate::CloneOutcome, GitError> {
+        Err(GitError::Unsupported("clone_commit: gitimage-git agent"))
+    }
+
+    async fn context_tree_via_host(
+        &self,
+        _url: &str,
+        _creds: &Credentials,
+        _sha: &str,
+        _context: &str,
+    ) -> Result<Option<String>, GitError> {
+        Ok(None)
+    }
 }
 
 fn is_ssh(url: &str) -> bool {

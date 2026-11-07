@@ -1,11 +1,24 @@
 [package]
 name = "gitimage-oci"
+description = "OCI distribution routes, storage backends and push tokens"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
 gitimage-api = { workspace = true }
+async-trait = "0.1.92"
+axum = { workspace = true }
+bytes = "1.12.1"
+futures = { workspace = true }
+hex = { workspace = true }
+jsonwebtoken = { version = "11.1.0", default-features = false, features = ["rust_crypto"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
 
 [lints]
 workspace = true
