@@ -225,8 +225,13 @@ async fn main() -> anyhow::Result<()> {
                 .as_ref()
                 .context("gitimage node runs only with storage.type s3")?;
             let storage = gitimage_oci::S3Storage::new(s3, a.access_key, a.secret_key)?;
-            let _ = storage; // MERGE-TODO: gitimage_node::serve(Arc::new(storage), cfg.node.port, cfg.node.health_port, shutdown_signal())
-            anyhow::bail!("gitimage node: not wired yet")
+            gitimage_node::serve(
+                std::sync::Arc::new(storage),
+                cfg.node.port,
+                cfg.node.health_port,
+                shutdown_signal(),
+            )
+            .await
         }
         Command::Clone => anyhow::bail!("gitimage clone: not wired yet"), // MERGE-TODO: gitimage_git::run_clone_cli
         Command::Crdgen { .. } | Command::Version | Command::CheckConfig { .. } => unreachable!(),

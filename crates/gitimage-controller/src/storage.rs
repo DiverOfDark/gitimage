@@ -1,6 +1,8 @@
 //! Builds the configured storage backend. Credentials come from Secrets in the controller
 //! namespace and never leave it (PRD: builds never see storage credentials).
 
+use std::sync::Arc;
+
 use gitimage_api::Config;
 use gitimage_api::config::StorageType;
 use gitimage_oci::DynStorage;
@@ -56,8 +58,7 @@ pub async fn build(cfg: &Config, client: &Client, ns: &str) -> anyhow::Result<Dy
                 .ok_or_else(|| anyhow::anyhow!("storage.s3 missing"))?;
             let (access, secret_key) = s3_credentials(client, ns, &s3.secret).await?;
             let store = gitimage_oci::S3Storage::new(s3, access, secret_key)?;
-            let _ = store; // MERGE-TODO: Ok(Arc::new(store)) once feat/oci lands
-            anyhow::bail!("s3 storage not built yet")
+            Ok(Arc::new(store))
         }
         StorageType::Registry => {
             let r = cfg
@@ -74,8 +75,7 @@ pub async fn build(cfg: &Config, client: &Client, ns: &str) -> anyhow::Result<Dy
                 })?;
             let store =
                 gitimage_oci::RegistryStorage::from_dockerconfigjson(&r.url, json, r.insecure)?;
-            let _ = store; // MERGE-TODO: Ok(Arc::new(store)) once feat/oci lands
-            anyhow::bail!("registry storage not built yet")
+            Ok(Arc::new(store))
         }
     }
 }

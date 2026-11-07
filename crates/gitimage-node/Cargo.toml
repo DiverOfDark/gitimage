@@ -1,11 +1,21 @@
 [package]
 name = "gitimage-node"
+description = "Read-only localhost OCI server for containerd on every node (s3 mode)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
-gitimage-api = { workspace = true }
+gitimage-oci = { workspace = true }
+anyhow = { workspace = true }
+axum = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+async-trait = { workspace = true }
+object_store = { workspace = true }
+reqwest = { workspace = true }
 
 [lints]
 workspace = true
