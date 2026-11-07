@@ -1,0 +1,136 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gitimage-controller
+  labels: {{- include "gitimage.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controller
+spec:
+  replicas: {{ .Values.controller.replicas }}
+  selector:
+    matchLabels: {{- include "gitimage.selector" . | nindent 6 }}
+      app.kubernetes.io/component: controller
+  template:
+    metadata:
+      labels: {{- include "gitimage.selector" . | nindent 8 }}
+        app.kubernetes.io/component: controller
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+    spec:
+      serviceAccountName: gitimage-controller
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext: { runAsNonRoot: true, seccompProfile: { type: RuntimeDefault } }
+      containers:
+        - name: controller
+          image: {{ include "gitimage.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - controller
+            {{- include "gitimage.logArgs" . | nindent 12 }}
+          env: {{- include "gitimage.podEnv" . | nindent 12 }}
+          ports:
+            - { name: push, containerPort: 5000 }
+            - { name: hooks, containerPort: 8080 }
+            - { name: ops, containerPort: 8081 }
+          readinessProbe:
+            httpGet: { path: /readyz, port: ops }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /healthz, port: ops }
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources: {{- toYaml .Values.controller.resources | nindent 12 }}
+          securityContext: {{- include "gitimage.securityContext" . | nindent 12 }}
+          volumeMounts:
+            - { name: config, mountPath: /etc/gitimage/config.yaml, subPath: config.yaml, readOnly: true }
+            - { name: push-tls, mountPath: /etc/gitimage/push-tls, readOnly: true }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: config
+          configMap: { name: gitimage-config }
+        - name: push-tls
+          secret: { secretName: gitimage-push-tls, optional: true }
+        - name: tmp
+          emptyDir: {}
+      {{- with .Values.controller.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.controller.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.controller.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- if gt (int .Values.controller.replicas) 1 }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: gitimage-controller
+  labels: {{- include "gitimage.labels" . | nindent 4 }}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: {{- include "gitimage.selector" . | nindent 6 }}
+      app.kubernetes.io/component: controller
+{{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gitimage-push
+  labels: {{- include "gitimage.labels" . | nindent 4 }}
+spec:
+  selector: {{- include "gitimage.selector" . | nindent 4 }}
+    app.kubernetes.io/component: controller
+  ports:
+    - { name: push, port: 5000, targetPort: push }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gitimage-hooks
+  labels: {{- include "gitimage.labels" . | nindent 4 }}
+spec:
+  selector: {{- include "gitimage.selector" . | nindent 4 }}
+    app.kubernetes.io/component: controller
+  ports:
+    - { name: hooks, port: 8080, targetPort: hooks }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gitimage-controller-metrics
+  labels: {{- include "gitimage.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controller
+spec:
+  selector: {{- include "gitimage.selector" . | nindent 4 }}
+    app.kubernetes.io/component: controller
+  ports:
+    - { name: ops, port: 8081, targetPort: ops }
+{{- if .Values.hooks.ingress.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: gitimage-hooks
+  labels: {{- include "gitimage.labels" . | nindent 4 }}
+  {{- with .Values.hooks.ingress.annotations }}
+  annotations: {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.hooks.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  rules:
+    - host: {{ required "hooks.ingress.host is required" .Values.hooks.ingress.host | quote }}
+      http:
+        paths:
+          - path: /hooks/
+            pathType: Prefix
+            backend: { service: { name: gitimage-hooks, port: { name: hooks } } }
+  {{- with .Values.hooks.ingress.tls }}
+  tls: {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end }}

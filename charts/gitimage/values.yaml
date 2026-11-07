@@ -1,0 +1,100 @@
+image:
+  repository: ghcr.io/diverofdark/gitimage
+  # Defaults to the chart's appVersion.
+  tag: ""
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+logFormat: json
+logLevel: info,kube=warn
+
+buildPolicy:
+  isolation:
+    # Required, no default (PRD N1): runtimeClass | userns | privileged
+    mode: ""
+    # For mode runtimeClass: kata, kata-qemu, kata-fc, gvisor, ...
+    runtimeClassName: ""
+    # Must be true to use mode privileged. Trusted repos only.
+    allowPrivileged: false
+  egress:
+    allowInternet: true
+    denyClusterCIDRs: true
+
+storage:
+  # registry | s3
+  type: registry
+  registry:
+    # Images land at <url>/<namespace>/<gitimage>:<sha>
+    url: ""
+    # Secret in the release namespace (type kubernetes.io/dockerconfigjson) with push credentials.
+    pushSecret: ""
+    # Optional Secret (dockerconfigjson) copied into tenant namespaces as gitimage-pull.
+    pullSecret: ""
+    # Plain HTTP to the registry (tests only).
+    insecure: false
+  s3:
+    bucket: ""
+    endpoint: ""
+    region: us-east-1
+    # Secret in the release namespace with AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY.
+    secret: ""
+    # Optional read-only credentials for gitimage-node; defaults to `secret`.
+    readOnlySecret: ""
+    pathStyle: true
+
+build:
+  image: moby/buildkit:v0.34.2-rootless
+  activeDeadline: 1h
+  platforms: [linux/amd64]
+  # max | min | off
+  cache: max
+  labels: {}
+  extraOpts: {}
+  defaultResources: {}
+    # requests: { cpu: "1", memory: 2Gi }
+    # limits: { memory: 4Gi }
+
+network:
+  # Pod and Service CIDRs denied to build egress, e.g. [10.244.0.0/16, 10.96.0.0/12]
+  clusterCIDRs: []
+
+controller:
+  replicas: 2
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits: { memory: 512Mi }
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+webhook:
+  replicas: 2
+  timeoutSeconds: 5
+  resources:
+    requests: { cpu: 20m, memory: 64Mi }
+    limits: { memory: 256Mi }
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+node:
+  # hostNetwork ports on 127.0.0.1; see the design doc before changing.
+  port: 25050
+  healthPort: 25051
+  resources:
+    requests: { cpu: 20m, memory: 32Mi }
+    limits: { memory: 128Mi }
+  priorityClassName: ""
+
+hooks:
+  # Public base URL of the hooks Ingress, e.g. https://gitimage.example.com
+  baseURL: ""
+  ingress:
+    enabled: false
+    className: ""
+    host: ""
+    annotations: {}
+    tls: []
+
+podMonitor:
+  enabled: false

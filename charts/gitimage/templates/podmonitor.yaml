@@ -1,0 +1,14 @@
+{{- if .Values.podMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: gitimage
+  labels: {{- include "gitimage.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels: {{- include "gitimage.selector" . | nindent 6 }}
+      app.kubernetes.io/component: controller
+  podMetricsEndpoints:
+    - port: ops
+      path: /metrics
+{{- end }}

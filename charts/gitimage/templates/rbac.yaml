@@ -1,0 +1,110 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gitimage-controller
+  labels: {{- include "gitimage.labels" . | nindent 4 }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gitimage-webhook
+  labels: {{- include "gitimage.labels" . | nindent 4 }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gitimage-node
+  labels: {{- include "gitimage.labels" . | nindent 4 }}
+automountServiceAccountToken: false
+---
+# Design D7: secrets get/create/update/delete, never list or watch.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: gitimage-controller
+  labels: {{- include "gitimage.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [gitimage.dev]
+    resources: [gitimages]
+    verbs: [get, list, watch, patch, update]
+  - apiGroups: [gitimage.dev]
+    resources: [gitimages/status]
+    verbs: [get, patch, update]
+  - apiGroups: [batch]
+    resources: [jobs]
+    verbs: [get, list, watch, create, delete]
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, watch, patch]
+  - apiGroups: [""]
+    resources: [pods/log]
+    verbs: [get]
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get, create, update, patch, delete]
+  - apiGroups: [""]
+    resources: [configmaps]
+    verbs: [get, create, update, patch]
+  - apiGroups: [networking.k8s.io]
+    resources: [networkpolicies]
+    verbs: [get, create, update, patch]
+  - apiGroups: [apps]
+    resources: [deployments, statefulsets, daemonsets]
+    verbs: [get, list, watch, patch]
+  - apiGroups: ["", events.k8s.io]
+    resources: [events]
+    verbs: [create, patch]
+  - apiGroups: [node.k8s.io]
+    resources: [runtimeclasses]
+    verbs: [get]
+  - apiGroups: [admissionregistration.k8s.io]
+    resources: [mutatingwebhookconfigurations]
+    resourceNames: [gitimage]
+    verbs: [get, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: gitimage-controller
+  labels: {{- include "gitimage.labels" . | nindent 4 }}
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: gitimage-controller }
+subjects:
+  - { kind: ServiceAccount, name: gitimage-controller, namespace: {{ .Release.Namespace }} }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: gitimage-controller
+  labels: {{- include "gitimage.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    verbs: [get, create, update, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: gitimage-controller
+  labels: {{- include "gitimage.labels" . | nindent 4 }}
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: gitimage-controller }
+subjects:
+  - { kind: ServiceAccount, name: gitimage-controller, namespace: {{ .Release.Namespace }} }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: gitimage-webhook
+  labels: {{- include "gitimage.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [gitimage.dev]
+    resources: [gitimages]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: gitimage-webhook
+  labels: {{- include "gitimage.labels" . | nindent 4 }}
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: gitimage-webhook }
+subjects:
+  - { kind: ServiceAccount, name: gitimage-webhook, namespace: {{ .Release.Namespace }} }

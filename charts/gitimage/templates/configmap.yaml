@@ -1,0 +1,70 @@
+{{- $mode := required "buildPolicy.isolation.mode is required (runtimeClass | userns | privileged)" .Values.buildPolicy.isolation.mode -}}
+{{- if and (eq $mode "runtimeClass") (not .Values.buildPolicy.isolation.runtimeClassName) }}
+{{- fail "buildPolicy.isolation.runtimeClassName is required for mode runtimeClass" }}
+{{- end }}
+{{- if and (eq .Values.storage.type "registry") (not .Values.storage.registry.url) }}
+{{- fail "storage.registry.url is required for storage.type registry" }}
+{{- end }}
+{{- if and (eq .Values.storage.type "s3") (not .Values.storage.s3.bucket) }}
+{{- fail "storage.s3.bucket is required for storage.type s3" }}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gitimage-config
+  labels: {{- include "gitimage.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    buildPolicy:
+      isolation:
+        mode: {{ $mode }}
+        {{- with .Values.buildPolicy.isolation.runtimeClassName }}
+        runtimeClassName: {{ . | quote }}
+        {{- end }}
+        allowPrivileged: {{ .Values.buildPolicy.isolation.allowPrivileged }}
+      egress:
+        allowInternet: {{ .Values.buildPolicy.egress.allowInternet }}
+        denyClusterCIDRs: {{ .Values.buildPolicy.egress.denyClusterCIDRs }}
+    storage:
+      type: {{ .Values.storage.type }}
+      {{- if eq .Values.storage.type "registry" }}
+      registry:
+        url: {{ .Values.storage.registry.url | quote }}
+        pushSecret: {{ required "storage.registry.pushSecret is required" .Values.storage.registry.pushSecret | quote }}
+        {{- with .Values.storage.registry.pullSecret }}
+        pullSecret: {{ . | quote }}
+        {{- end }}
+        insecure: {{ .Values.storage.registry.insecure }}
+      {{- else }}
+      s3:
+        bucket: {{ .Values.storage.s3.bucket | quote }}
+        endpoint: {{ required "storage.s3.endpoint is required" .Values.storage.s3.endpoint | quote }}
+        region: {{ .Values.storage.s3.region | quote }}
+        secret: {{ required "storage.s3.secret is required" .Values.storage.s3.secret | quote }}
+        {{- with .Values.storage.s3.readOnlySecret }}
+        readOnlySecret: {{ . | quote }}
+        {{- end }}
+        pathStyle: {{ .Values.storage.s3.pathStyle }}
+      {{- end }}
+    pushEndpoint:
+      host: {{ include "gitimage.pushHost" . }}
+      port: 5000
+    build:
+      image: {{ .Values.build.image | quote }}
+      activeDeadline: {{ .Values.build.activeDeadline | quote }}
+      platforms: {{ toJson .Values.build.platforms }}
+      cache: {{ .Values.build.cache }}
+      labels: {{ toJson .Values.build.labels }}
+      extraOpts: {{ toJson .Values.build.extraOpts }}
+      defaultResources: {{ toJson .Values.build.defaultResources }}
+    network:
+      clusterCIDRs: {{ toJson .Values.network.clusterCIDRs }}
+    node:
+      port: {{ .Values.node.port }}
+      healthPort: {{ .Values.node.healthPort }}
+    {{- with .Values.hooks.baseURL }}
+    hooks:
+      baseURL: {{ . | quote }}
+    {{- end }}
+    controller:
+      image: {{ include "gitimage.image" . | quote }}

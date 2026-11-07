@@ -1,0 +1,56 @@
+{{- if eq .Values.storage.type "s3" }}
+# Stateless read-only OCI server on 127.0.0.1:{{ .Values.node.port }} for containerd pulls (s3 mode).
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: gitimage-node
+  labels: {{- include "gitimage.labels" . | nindent 4 }}
+    app.kubernetes.io/component: node
+spec:
+  selector:
+    matchLabels: {{- include "gitimage.selector" . | nindent 6 }}
+      app.kubernetes.io/component: node
+  template:
+    metadata:
+      labels: {{- include "gitimage.selector" . | nindent 8 }}
+        app.kubernetes.io/component: node
+    spec:
+      serviceAccountName: gitimage-node
+      automountServiceAccountToken: false
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      {{- with .Values.node.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      tolerations:
+        - operator: Exists
+      securityContext: { runAsNonRoot: true, seccompProfile: { type: RuntimeDefault } }
+      containers:
+        - name: node
+          image: {{ include "gitimage.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - node
+            {{- include "gitimage.logArgs" . | nindent 12 }}
+          env:
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom: { secretKeyRef: { name: {{ .Values.storage.s3.readOnlySecret | default .Values.storage.s3.secret }}, key: AWS_ACCESS_KEY_ID } }
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom: { secretKeyRef: { name: {{ .Values.storage.s3.readOnlySecret | default .Values.storage.s3.secret }}, key: AWS_SECRET_ACCESS_KEY } }
+          readinessProbe:
+            httpGet: { path: /readyz, port: {{ .Values.node.healthPort }} }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /healthz, port: {{ .Values.node.healthPort }} }
+            periodSeconds: 20
+          resources: {{- toYaml .Values.node.resources | nindent 12 }}
+          securityContext: {{- include "gitimage.securityContext" . | nindent 12 }}
+          volumeMounts:
+            - { name: config, mountPath: /etc/gitimage/config.yaml, subPath: config.yaml, readOnly: true }
+      volumes:
+        - name: config
+          configMap: { name: gitimage-config }
+{{- end }}

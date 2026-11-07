@@ -1,0 +1,25 @@
+apiVersion: gitimage.dev/v1alpha1
+kind: GitImage
+metadata: { name: myapp, namespace: team-a }
+spec:
+  url: https://github.com/you/myapp.git
+  ref: main
+  # secretRef: { name: myapp-git }   # ssh: identity + known_hosts | https: username + password
+  interval: 5m
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: myapp, namespace: team-a }
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: myapp } }
+  template:
+    metadata:
+      labels: { app: myapp }
+      annotations:
+        gitimage.dev/image.web: myapp      # container "web" runs GitImage "myapp"
+    spec:
+      containers:
+        - name: web
+          image: placeholder               # replaced with the built digest at admission
+          ports: [{ containerPort: 8080 }]

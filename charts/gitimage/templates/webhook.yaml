@@ -1,0 +1,132 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gitimage-webhook
+  labels: {{- include "gitimage.labels" . | nindent 4 }}
+    app.kubernetes.io/component: webhook
+spec:
+  replicas: {{ .Values.webhook.replicas }}
+  selector:
+    matchLabels: {{- include "gitimage.selector" . | nindent 6 }}
+      app.kubernetes.io/component: webhook
+  template:
+    metadata:
+      labels: {{- include "gitimage.selector" . | nindent 8 }}
+        app.kubernetes.io/component: webhook
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+    spec:
+      serviceAccountName: gitimage-webhook
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext: { runAsNonRoot: true, seccompProfile: { type: RuntimeDefault } }
+      containers:
+        - name: webhook
+          image: {{ include "gitimage.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - webhook
+            {{- include "gitimage.logArgs" . | nindent 12 }}
+          ports:
+            - { name: https, containerPort: 8443 }
+            - { name: ops, containerPort: 8081 }
+          readinessProbe:
+            httpGet: { path: /readyz, port: ops }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /healthz, port: ops }
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources: {{- toYaml .Values.webhook.resources | nindent 12 }}
+          securityContext: {{- include "gitimage.securityContext" . | nindent 12 }}
+          volumeMounts:
+            - { name: config, mountPath: /etc/gitimage/config.yaml, subPath: config.yaml, readOnly: true }
+            - { name: tls, mountPath: /etc/gitimage/webhook-tls, readOnly: true }
+      volumes:
+        - name: config
+          configMap: { name: gitimage-config }
+        - name: tls
+          secret: { secretName: gitimage-webhook-tls, optional: true }
+      {{- with .Values.webhook.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.webhook.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.webhook.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- if gt (int .Values.webhook.replicas) 1 }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: gitimage-webhook
+  labels: {{- include "gitimage.labels" . | nindent 4 }}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: {{- include "gitimage.selector" . | nindent 6 }}
+      app.kubernetes.io/component: webhook
+{{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gitimage-webhook
+  labels: {{- include "gitimage.labels" . | nindent 4 }}
+spec:
+  selector: {{- include "gitimage.selector" . | nindent 4 }}
+    app.kubernetes.io/component: webhook
+  ports:
+    - { name: https, port: 443, targetPort: https }
+---
+# caBundle is filled in by the controller at startup (design D5). With ArgoCD, ignore
+# /webhooks/*/clientConfig/caBundle (see examples/argocd).
+{{- $pull := include "gitimage.pullHost" . }}
+{{- $push := printf "%s:5000" (include "gitimage.pushHost" .) }}
+{{- $imgMatch := printf "c.image.startsWith('%s/') || c.image.startsWith('%s/')" $pull $push }}
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: gitimage
+  labels: {{- include "gitimage.labels" . | nindent 4 }}
+webhooks:
+  - name: mutate.gitimage.dev
+    admissionReviewVersions: [v1]
+    sideEffects: None
+    failurePolicy: Fail
+    timeoutSeconds: {{ .Values.webhook.timeoutSeconds }}
+    reinvocationPolicy: IfNeeded
+    clientConfig:
+      service: { name: gitimage-webhook, namespace: {{ .Release.Namespace }}, path: /mutate, port: 443 }
+    rules:
+      - { apiGroups: [""], apiVersions: [v1], operations: [CREATE], resources: [pods], scope: Namespaced }
+    namespaceSelector:
+      matchExpressions:
+        - { key: kubernetes.io/metadata.name, operator: NotIn, values: [{{ .Release.Namespace }}] }
+    matchConditions:
+      - name: annotated
+        expression: >-
+          has(object.metadata.annotations) &&
+          object.metadata.annotations.exists(k, k.startsWith('gitimage.dev/image.'))
+  - name: guard.gitimage.dev
+    admissionReviewVersions: [v1]
+    sideEffects: None
+    failurePolicy: Fail
+    timeoutSeconds: {{ .Values.webhook.timeoutSeconds }}
+    clientConfig:
+      service: { name: gitimage-webhook, namespace: {{ .Release.Namespace }}, path: /guard, port: 443 }
+    rules:
+      - { apiGroups: [""], apiVersions: [v1], operations: [CREATE], resources: [pods], scope: Namespaced }
+      - { apiGroups: [""], apiVersions: [v1], operations: [UPDATE], resources: [pods/ephemeralcontainers], scope: Namespaced }
+    namespaceSelector:
+      matchExpressions:
+        - { key: kubernetes.io/metadata.name, operator: NotIn, values: [{{ .Release.Namespace }}] }
+    matchConditions:
+      - name: uses-gitimage-host
+        expression: >-
+          object.spec.containers.exists(c, has(c.image) && ({{ $imgMatch }})) ||
+          (has(object.spec.initContainers) && object.spec.initContainers.exists(c, has(c.image) && ({{ $imgMatch }}))) ||
+          (has(object.spec.ephemeralContainers) && object.spec.ephemeralContainers.exists(c, has(c.image) && ({{ $imgMatch }})))

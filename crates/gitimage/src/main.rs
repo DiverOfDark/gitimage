@@ -57,6 +57,11 @@ enum Command {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    /// Validate a config.yaml (e.g. one rendered by the Helm chart) and exit.
+    CheckConfig {
+        #[arg(long, default_value = "/etc/gitimage/config.yaml")]
+        config: PathBuf,
+    },
     /// Print the version.
     Version,
 }
@@ -161,6 +166,16 @@ async fn main() -> anyhow::Result<()> {
             println!("gitimage {}", env!("CARGO_PKG_VERSION"));
             return Ok(());
         }
+        Command::CheckConfig { config } => {
+            let cfg = load_config(&config)?;
+            println!(
+                "ok: isolation {:?}, storage {:?}, pull host {}",
+                cfg.build_policy.isolation.mode,
+                cfg.storage.kind,
+                cfg.pull_host()
+            );
+            return Ok(());
+        }
         _ => {}
     }
     init_logging(cli.log_format, &cli.log_level)?;
@@ -214,7 +229,7 @@ async fn main() -> anyhow::Result<()> {
             anyhow::bail!("gitimage node: not wired yet")
         }
         Command::Clone => anyhow::bail!("gitimage clone: not wired yet"), // MERGE-TODO: gitimage_git::run_clone_cli
-        Command::Crdgen { .. } | Command::Version => unreachable!(),
+        Command::Crdgen { .. } | Command::Version | Command::CheckConfig { .. } => unreachable!(),
     }
 }
 

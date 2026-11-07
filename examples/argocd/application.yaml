@@ -1,0 +1,61 @@
+# GitImage writes two things ArgoCD would otherwise report as drift:
+#  - gitimage.dev/revision.<container> pod-template annotations (the workload roller, field
+#    manager gitimage-controller)
+#  - the caBundle of the gitimage MutatingWebhookConfiguration (filled in at startup)
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: myapp
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/you/myapp-deploy.git
+    targetRevision: main
+    path: k8s
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: team-a
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }
+    syncOptions: [ServerSideApply=true, RespectIgnoreDifferences=true]
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      managedFieldsManagers: [gitimage-controller]
+    - group: apps
+      kind: StatefulSet
+      managedFieldsManagers: [gitimage-controller]
+    - group: apps
+      kind: DaemonSet
+      managedFieldsManagers: [gitimage-controller]
+---
+# The chart itself, if ArgoCD installs GitImage too.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: gitimage
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: ghcr.io/diverofdark/charts
+    chart: gitimage
+    targetRevision: 0.1.0
+    helm:
+      valuesObject:
+        buildPolicy: { isolation: { mode: runtimeClass, runtimeClassName: kata } }
+        storage:
+          type: s3
+          s3: { bucket: gitimage, endpoint: "http://rook-ceph-rgw-ceph-objectstore.rook-ceph.svc", secret: gitimage-s3 }
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: gitimage-system
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }
+    syncOptions: [CreateNamespace=true, ServerSideApply=true, RespectIgnoreDifferences=true]
+  ignoreDifferences:
+    - group: admissionregistration.k8s.io
+      kind: MutatingWebhookConfiguration
+      name: gitimage
+      jqPathExpressions: ['.webhooks[].clientConfig.caBundle']

@@ -41,6 +41,7 @@ pub struct AppState {
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/mutate", post(admit))
+        .route("/guard", post(guard))
         .route("/healthz", get(|| async { "ok" }))
         .with_state(state)
 }
@@ -96,6 +97,34 @@ async fn admit(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     base64_patch(&mut value);
     Ok(Json(value))
+}
+
+/// Check-only entry for the cross-tenant guard: never patches.
+async fn guard(
+    State(state): State<AppState>,
+    Json(body): Json<AdmissionReview<Pod>>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let req: AdmissionRequest<Pod> = body.try_into().map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            format!("invalid AdmissionReview: {e}"),
+        )
+    })?;
+    let mut resp = AdmissionResponse::from(&req);
+    if let Some(pod) = req.object.as_ref() {
+        let ns = req
+            .namespace
+            .clone()
+            .or_else(|| pod.metadata.namespace.clone())
+            .unwrap_or_default();
+        if let Some(reason) = mutate::cross_tenant_violation(pod, &ns, &state.config) {
+            tracing::info!(namespace = %ns, %reason, "guard denied pod");
+            resp = resp.deny(reason);
+        }
+    }
+    serde_json::to_value(resp.into_review())
+        .map(Json)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
 }
 
 /// The API server documents `response.patch` as a base64 string (Go `[]byte`); kube
