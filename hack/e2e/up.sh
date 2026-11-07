@@ -26,7 +26,7 @@ run_once() { # name, args...
 run_once kind-registry -p 127.0.0.1:5001:5000 "$REGISTRY_IMAGE"
 # S3: SeaweedFS (MinIO no longer publishes images).
 run_once e2e-s3 -p 127.0.0.1:8333:8333 -v "$PWD/hack/e2e/s3.json:/etc/seaweedfs/s3.json:ro" \
-  "$S3_IMAGE" server -dir=/data -s3 -s3.port=8333 -s3.config=/etc/seaweedfs/s3.json
+  "$S3_IMAGE" server -dir=/data -master.volumeSizeLimitMB=1024 -volume.max=64 -s3 -s3.port=8333 -s3.config=/etc/seaweedfs/s3.json
 run_once e2e-gitea -p 127.0.0.1:3300:3000 -p 127.0.0.1:2222:2222 \
   -e GITEA__security__INSTALL_LOCK=true -e GITEA__server__ROOT_URL=http://e2e-gitea:3000/ \
   -e GITEA__server__SSH_DOMAIN=e2e-gitea -e GITEA__server__SSH_PORT=2222 -e GITEA__server__START_SSH_SERVER=true \
