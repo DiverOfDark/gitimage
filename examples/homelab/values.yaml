@@ -1,0 +1,21 @@
+# Talos homelab: Kata on nodes with /dev/kvm, Ceph RGW (Rook) as S3, no registry.
+# Before installing, check on a Kata node that the kata handler keeps privileged in the guest:
+#   talosctl -n <node> read /etc/cri/conf.d/20-customization.part  (or the Kata extension's
+#   containerd snippet) must contain privileged_without_host_devices = true.
+buildPolicy:
+  isolation:
+    mode: runtimeClass
+    runtimeClassName: kata
+    privilegedInSandbox: true
+
+storage:
+  type: s3
+  s3:
+    bucket: gitimage            # bucket name from the ObjectBucketClaim below (BUCKET_NAME)
+    endpoint: http://rook-ceph-rgw-ceph-objectstore.rook-ceph.svc
+    secret: gitimage            # the OBC creates this Secret with AWS_ACCESS_KEY_ID/SECRET
+    pathStyle: true
+
+network:
+  # Talos defaults; adjust to your cluster's pod and service CIDRs.
+  clusterCIDRs: [10.244.0.0/16, 10.96.0.0/12]

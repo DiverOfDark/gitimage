@@ -1,0 +1,10 @@
+# Apply before the chart: Rook creates Secret `gitimage` and ConfigMap `gitimage` in
+# gitimage-system with the credentials and the generated bucket name.
+apiVersion: objectbucket.io/v1alpha1
+kind: ObjectBucketClaim
+metadata:
+  name: gitimage
+  namespace: gitimage-system
+spec:
+  bucketName: gitimage
+  storageClassName: ceph-bucket
