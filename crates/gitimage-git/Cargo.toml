@@ -6,11 +6,28 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+gitimage-api = { workspace = true }
 gix = { version = "0.90.0", default-features = false, features = ["blocking-network-client", "blocking-http-transport-reqwest-rust-tls", "worktree-mutation", "sha1"] }
+# Pure-Rust ssh (design D3). `ring` instead of the default aws-lc-rs: no cmake/C build for
+# the ssh crypto; `rsa` for RSA identities (signed with rsa-sha2-256/512).
+russh = { version = "0.65.1", default-features = false, features = ["ring", "rsa"] }
+tokio-util = { version = "0.7.20", features = ["io-util"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls"] }
+hmac = "0.13"
+sha1 = "0.11"
+data-encoding = "2"
+bytes = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+clap = { workspace = true }
+anyhow = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true }
 tempfile = "3"
+
+[dev-dependencies]
+axum = { workspace = true }
 
 [lints]
 workspace = true
