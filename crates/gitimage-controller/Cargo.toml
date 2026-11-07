@@ -1,11 +1,42 @@
 [package]
 name = "gitimage-controller"
+description = "Reconcilers, push endpoint, hooks, GC and isolation check"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
 gitimage-api = { workspace = true }
+gitimage-git = { workspace = true }
+gitimage-oci = { workspace = true }
+gitimage-tls = { workspace = true }
+gitimage-webhook = { workspace = true }
+kube = { workspace = true }
+k8s-openapi = { workspace = true }
+kube-lease-manager = "0.13.1"
+axum = { workspace = true }
+async-trait = { workspace = true }
+base64 = { workspace = true }
+chrono = { workspace = true }
+futures = { workspace = true }
+hex = { workspace = true }
+json-patch = { workspace = true }
+prometheus-client = { workspace = true }
+rand = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { version = "0.7.20", features = ["io", "rt"] }
+tower-http = { workspace = true }
+tracing = { workspace = true }
+humantime = { workspace = true }
+
+[dev-dependencies]
+insta = { workspace = true }
 
 [lints]
 workspace = true

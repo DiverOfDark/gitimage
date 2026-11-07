@@ -1,0 +1,43 @@
+---
+source: crates/gitimage-controller/src/job.rs
+expression: "egress_policy(\"team-a\", &config(), \"gitimage-system\")"
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: gitimage
+  name: gitimage-build-egress
+  namespace: team-a
+spec:
+  egress:
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    - ports:
+        - port: 5000
+          protocol: TCP
+      to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: gitimage-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/component: controller
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.244.0.0/16
+    - to:
+        - ipBlock:
+            cidr: "::/0"
+            except:
+              - "fd00::/48"
+  podSelector:
+    matchLabels:
+      gitimage.dev/role: build
+  policyTypes:
+    - Egress

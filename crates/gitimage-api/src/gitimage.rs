@@ -182,6 +182,12 @@ pub struct GitImageStatus {
     pub builds: Vec<BuildRecord>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub conditions: Vec<Condition>,
+    /// Last `gitimage.dev/rebuild` value acted on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handled_rebuild: Option<String>,
+    /// Last `gitimage.dev/hook-at` value acted on (debounce).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handled_hook_at: Option<String>,
 }
 
 impl GitImageStatus {
@@ -191,6 +197,16 @@ impl GitImageStatus {
             .iter()
             .find(|b| b.revision == revision)
             .and_then(|b| b.digest.as_deref())
+    }
+
+    /// The record for `revision`, if any.
+    pub fn record(&self, revision: &str) -> Option<&BuildRecord> {
+        self.builds.iter().find(|b| b.revision == revision)
+    }
+
+    /// The newest record that produced or reused an image.
+    pub fn last_good(&self) -> Option<&BuildRecord> {
+        self.builds.iter().find(|b| b.digest.is_some())
     }
 
     pub fn condition(&self, type_: &str) -> Option<&Condition> {
@@ -213,6 +229,9 @@ pub struct BuildRecord {
     /// F7: the older commit whose image this one reuses.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_revision: Option<String>,
+    /// Failure reason for `Failed` records, e.g. `BuildFailed`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
     /// RFC 3339.
     pub finished_at: String,
 }
@@ -220,8 +239,12 @@ pub struct BuildRecord {
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, JsonSchema)]
 pub enum BuildOutcome {
     Built,
+    /// F7: the context tree did not change; `digest` is the reused one.
     Reused,
+    /// Cancelled by a newer commit (`onNewCommit: cancel`).
     Superseded,
+    /// The build failed; `reason` says why. Retried only by `gitimage.dev/rebuild`.
+    Failed,
 }
 
 /// Same shape as `metav1.Condition`.
@@ -312,6 +335,7 @@ interval: 5m
                     digest: None,
                     context_tree: None,
                     source_revision: None,
+                    reason: None,
                     finished_at: "2026-11-07T00:00:00Z".into(),
                 },
                 BuildRecord {
@@ -320,6 +344,7 @@ interval: 5m
                     digest: Some("sha256:aa".into()),
                     context_tree: None,
                     source_revision: None,
+                    reason: None,
                     finished_at: "2026-11-07T00:00:00Z".into(),
                 },
             ],

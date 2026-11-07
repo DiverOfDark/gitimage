@@ -28,6 +28,27 @@ pub struct Config {
     pub network: Network,
     #[serde(default)]
     pub node: Node,
+    #[serde(default)]
+    pub hooks: Hooks,
+    #[serde(default)]
+    pub controller: ControllerSettings,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Hooks {
+    /// Public base URL of the hooks Ingress, e.g. `https://gitimage.example.com`.
+    /// `status.webhookURL` is `<baseURL>/hooks/<token>`; without it the URL is not shown.
+    #[serde(default, rename = "baseURL", skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ControllerSettings {
+    /// Image of `gitimage` itself, used for the `clone` init container. Set by the chart.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
 }
 
 impl Config {
