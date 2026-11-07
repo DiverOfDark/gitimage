@@ -81,6 +81,65 @@ pub async fn run(settings: Settings) -> anyhow::Result<()> {
     let config = Config::from_yaml(&raw)?;
     let client = Client::try_default().await?;
     let ns = settings.namespace.clone();
+    let metrics = Arc::new(Metrics::default());
+    let ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let shutdown = CancellationToken::new();
+    {
+        let s = shutdown.clone();
+        tokio::spawn(async move {
+            #[cfg(unix)]
+            if let Ok(mut term) =
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            {
+                tokio::select! {
+                    _ = term.recv() => {}
+                    _ = tokio::signal::ctrl_c() => {}
+                }
+            }
+            s.cancel();
+        });
+    }
+    // Health first: the isolation check can take minutes on a cold node.
+    let ops = {
+        let s = shutdown.clone();
+        let m = metrics.clone();
+        let r = ready.clone();
+        let router = Router::new()
+            .route("/healthz", get(|| async { "ok" }))
+            .route(
+                "/readyz",
+                get(move || {
+                    let ok = r.load(std::sync::atomic::Ordering::SeqCst);
+                    async move {
+                        if ok {
+                            (StatusCode::OK, "ok")
+                        } else {
+                            (StatusCode::SERVICE_UNAVAILABLE, "starting")
+                        }
+                    }
+                }),
+            )
+            .route(
+                "/metrics",
+                get(move || {
+                    let body = m.encode();
+                    async move {
+                        (
+                            [(
+                                "content-type",
+                                "application/openmetrics-text; version=1.0.0; charset=utf-8",
+                            )],
+                            body,
+                        )
+                    }
+                }),
+            );
+        tokio::spawn(gitimage_tls::serve_plain(
+            settings.ops_addr,
+            router,
+            async move { s.cancelled().await },
+        ))
+    };
 
     let keys = bootstrap::ensure(&client, &ns, &config.push_endpoint.host, false).await?;
 
@@ -90,7 +149,6 @@ pub async fn run(settings: Settings) -> anyhow::Result<()> {
     }
 
     let storage = storage::build(&config, &client, &ns).await?;
-    let metrics = Arc::new(Metrics::default());
     let gitimages = reflect(
         Api::<GitImage>::all(client.clone()),
         watcher::Config::default().any_semantic(),
@@ -99,30 +157,6 @@ pub async fn run(settings: Settings) -> anyhow::Result<()> {
         Api::<Job>::all(client.clone()),
         watcher::Config::default().labels(&format!("{}={}", keys::ROLE_LABEL, keys::ROLE_BUILD)),
     );
-
-    let shutdown = CancellationToken::new();
-    {
-        let s = shutdown.clone();
-        tokio::spawn(async move {
-            let _ = tokio::signal::ctrl_c().await;
-            #[cfg(unix)]
-            {
-                let _ = s;
-            }
-        });
-        let s2 = shutdown.clone();
-        tokio::spawn(async move {
-            #[cfg(unix)]
-            {
-                if let Ok(mut term) =
-                    tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-                {
-                    term.recv().await;
-                }
-            }
-            s2.cancel();
-        });
-    }
 
     // HTTP servers on every replica.
     let push_state = gitimage_oci::PushState {
@@ -159,47 +193,15 @@ pub async fn run(settings: Settings) -> anyhow::Result<()> {
             async move { s.cancelled().await },
         ))
     };
-    let ops = {
-        let s = shutdown.clone();
-        let m = metrics.clone();
-        let (g, j) = (gitimages.clone(), build_jobs.clone());
-        let router = Router::new()
-            .route("/healthz", get(|| async { "ok" }))
-            .route(
-                "/readyz",
-                get(move || {
-                    let ready = g.state().len() + j.state().len() > 0
-                        || futures::FutureExt::now_or_never(g.wait_until_ready()).is_some();
-                    async move {
-                        if ready {
-                            (StatusCode::OK, "ok")
-                        } else {
-                            (StatusCode::SERVICE_UNAVAILABLE, "caches not synced")
-                        }
-                    }
-                }),
-            )
-            .route(
-                "/metrics",
-                get(move || {
-                    let body = m.encode();
-                    async move {
-                        (
-                            [(
-                                "content-type",
-                                "application/openmetrics-text; version=1.0.0; charset=utf-8",
-                            )],
-                            body,
-                        )
-                    }
-                }),
-            );
-        tokio::spawn(gitimage_tls::serve_plain(
-            settings.ops_addr,
-            router,
-            async move { s.cancelled().await },
-        ))
-    };
+    {
+        let (g, j, r) = (gitimages.clone(), build_jobs.clone(), ready.clone());
+        tokio::spawn(async move {
+            if g.wait_until_ready().await.is_ok() && j.wait_until_ready().await.is_ok() {
+                r.store(true, std::sync::atomic::Ordering::SeqCst);
+                tracing::info!("caches synced; ready");
+            }
+        });
+    }
 
     // Leader-only loops.
     let (trigger_tx, trigger_rx) = tokio::sync::mpsc::unbounded_channel();

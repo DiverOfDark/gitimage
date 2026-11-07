@@ -147,22 +147,38 @@ pub async fn check(client: &Client, cfg: &Config, ns: &str) -> Result<(), Isolat
     let jobs: Api<Job> = Api::namespaced(client.clone(), ns);
     let job = check_job(cfg, ns);
     let name = job.name_any();
-    let dp = DeleteParams {
-        propagation_policy: Some(PropagationPolicy::Background),
-        ..Default::default()
-    };
-    let _ = jobs.delete(&name, &dp).await;
     let start = Instant::now();
+    // Replicas share one check Job (its name is keyed on the config): wait on a running one,
+    // reuse a passed one, replace a failed one.
     loop {
-        match jobs.create(&PostParams::default(), &job).await {
-            Ok(_) => break,
-            Err(kube::Error::Api(e))
-                if e.code == 409 && start.elapsed() < Duration::from_secs(30) =>
-            {
-                tokio::time::sleep(Duration::from_secs(1)).await;
+        match jobs.get_opt(&name).await {
+            Ok(Some(existing)) => {
+                let st = existing.status.clone().unwrap_or_default();
+                let failed = st.failed.unwrap_or(0) > 0;
+                if failed && existing.metadata.deletion_timestamp.is_none() {
+                    let dp = DeleteParams {
+                        propagation_policy: Some(PropagationPolicy::Background),
+                        ..Default::default()
+                    };
+                    let _ = jobs.delete(&name, &dp).await;
+                }
+                if !failed {
+                    break;
+                }
             }
-            Err(e) => return Err(IsolationUnavailable(format!("creating check job: {e}"))),
+            Ok(None) => match jobs.create(&PostParams::default(), &job).await {
+                Ok(_) => break,
+                Err(kube::Error::Api(e)) if e.code == 409 => {}
+                Err(e) => return Err(IsolationUnavailable(format!("creating check job: {e}"))),
+            },
+            Err(e) => return Err(IsolationUnavailable(format!("reading check job: {e}"))),
         }
+        if start.elapsed() > Duration::from_secs(60) {
+            return Err(IsolationUnavailable(format!(
+                "could not start check job {name}"
+            )));
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
     }
     tracing::info!(mode = ?iso.mode, job = %name, "isolation check started");
     let pods: Api<Pod> = Api::namespaced(client.clone(), ns);
