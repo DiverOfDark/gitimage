@@ -132,6 +132,10 @@ jobs:
         run: |
           export KUBECONFIG=$PWD/hack/.kubeconfig PATH=$PWD/hack/bin:$PATH
           kubectl get pods,jobs,gitimages -A -o wide || true
+          kubectl get events -A --sort-by=.lastTimestamp | grep -v Normal | tail -40 || true
+          for n in $(kind get nodes --name "${CLUSTER:-gitimage-e2e}" 2>/dev/null); do
+            docker exec "$n" sh -c 'journalctl -u containerd --no-pager --since "-10min" | grep -iE "error|fail" | tail -20' || true
+          done
           kubectl -n gitimage-system logs -l app.kubernetes.io/name=gitimage --tail=300 --prefix || true
       - name: Clean up
         if: always()
