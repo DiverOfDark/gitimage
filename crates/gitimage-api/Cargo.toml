@@ -1,0 +1,22 @@
+[package]
+name = "gitimage-api"
+description = "GitImage CRD types, annotation keys and controller config"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+kube = { workspace = true }
+k8s-openapi = { workspace = true }
+schemars = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+thiserror = { workspace = true }
+humantime = { workspace = true }
+
+[dev-dependencies]
+insta = { workspace = true }
+
+[lints]
+workspace = true

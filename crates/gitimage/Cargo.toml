@@ -1,0 +1,23 @@
+[package]
+name = "gitimage"
+description = "Git URL to running pod, built in-cluster"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "gitimage"
+path = "src/main.rs"
+
+[dependencies]
+gitimage-api = { workspace = true }
+kube = { workspace = true }
+serde_yaml = { workspace = true }
+clap = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+tokio = { workspace = true }
+
+[lints]
+workspace = true
