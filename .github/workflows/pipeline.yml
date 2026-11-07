@@ -116,7 +116,7 @@ jobs:
       - uses: azure/setup-helm@v4
       - name: Tools
         run: |
-          chmod +x dist/*
+          chmod +x dist/e2e-flow   # not gitimage-amd64: the image build must set its mode itself
           command -v ssh-keyscan >/dev/null || (sudo apt-get update -q && sudo apt-get install -yq openssh-client)
       - name: e2e ${{ matrix.storage }} / ${{ matrix.isolation }}
         env:
@@ -163,6 +163,12 @@ jobs:
           tags: ${{ env.IMAGE }}:${{ env.VERSION }},${{ env.IMAGE }}:latest
           sbom: true
           provenance: mode=max
+      - name: Smoke-test the pushed image
+        run: |
+          for p in linux/amd64 linux/arm64; do
+            out=$(docker run --rm --platform "$p" "$IMAGE:$VERSION" version)
+            echo "$p: $out"; [ "$out" = "gitimage $VERSION" ]
+          done
       - uses: sigstore/cosign-installer@v3
       - run: cosign sign --yes "$IMAGE@${{ steps.image.outputs.digest }}"
       - uses: azure/setup-helm@v4

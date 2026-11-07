@@ -8,7 +8,7 @@ export PATH="$PWD/hack/bin:$PATH"
 CLUSTER=${CLUSTER:-gitimage-e2e}
 if [ -n "${GITIMAGE_BINARY:-}" ]; then
   ctx=$(mktemp -d); trap 'rm -rf "$ctx"' EXIT
-  install -m 0755 "$GITIMAGE_BINARY" "$ctx/gitimage-amd64"
+  cp "$GITIMAGE_BINARY" "$ctx/gitimage-amd64"   # mode as downloaded: Dockerfile.release must fix it
   docker build -q -f Dockerfile.release --build-arg TARGETARCH=amd64 -t gitimage:e2e "$ctx"
 else
   DOCKER_BUILDKIT=1 docker build -f hack/e2e/Dockerfile.dev -t gitimage:e2e .
