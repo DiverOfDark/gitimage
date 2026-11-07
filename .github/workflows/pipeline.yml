@@ -1,0 +1,201 @@
+# One pipeline: checks -> one cached build -> e2e matrix -> (main only) release + docs.
+# A push to main is released as v<major>.<minor>.<run number> only when every check and every
+# e2e job passed.
+name: pipeline
+on:
+  push: { branches: [main] }
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: pipeline-${{ github.ref }}
+  # PRs: newer pushes cancel older runs. main: runs queue, so a release is never cut in half.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  IMAGE: ghcr.io/diverofdark/gitimage
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      release: ${{ steps.v.outputs.release }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        run: |
+          base=$(sed -n 's/^version = "\([0-9]*\.[0-9]*\)\..*/\1/p' Cargo.toml | head -1)
+          if [ "${{ github.event_name }}" = push ] && [ "${{ github.ref }}" = refs/heads/main ]; then
+            echo "version=$base.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=$base.${{ github.run_number }}-ci" >> "$GITHUB_OUTPUT"
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with: { toolchain: "1.99", components: "rustfmt, clippy" }
+      - uses: Swatinem/rust-cache@v2
+        with: { shared-key: check, save-if: "${{ github.ref == 'refs/heads/main' }}" }
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+      - uses: azure/setup-helm@v4
+      - run: helm lint charts/gitimage --set buildPolicy.isolation.mode=userns --set storage.registry.url=r/b --set storage.registry.pushSecret=p
+      - run: ./hack/check-chart-config.sh
+      - uses: taiki-e/install-action@v2
+        with: { tool: cargo-deny }
+      - run: cargo deny check
+
+  oci-conformance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with: { toolchain: "1.99" }
+      - uses: Swatinem/rust-cache@v2
+        with: { shared-key: conformance, save-if: "${{ github.ref == 'refs/heads/main' }}" }
+      - uses: actions/setup-go@v5
+        with: { go-version: stable, cache: false }
+      - run: hack/oci-conformance.sh
+
+  # Built once on bookworm (glibc 2.36): the binary runs in distroless and on any runner; the
+  # e2e jobs only download it, so no e2e job compiles Rust.
+  build:
+    needs: version
+    strategy:
+      matrix:
+        include:
+          - { arch: amd64, runner: ubuntu-24.04 }
+          - { arch: arm64, runner: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.runner }}
+    container: rust:1.99-bookworm
+    env:
+      GITIMAGE_VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+        with: { shared-key: "release-${{ matrix.arch }}", save-if: "${{ github.ref == 'refs/heads/main' }}" }
+      - run: cargo build --release --locked -p gitimage
+      - name: e2e test binary (release profile, shares the build above)
+        if: matrix.arch == 'amd64'
+        run: |
+          bin=$(cargo test --release --locked -p e2e --test flow --no-run --message-format=json \
+            | grep -o '"executable":"[^"]*"' | cut -d'"' -f4 | grep '/flow-' | tail -1)
+          mkdir -p dist && cp "$bin" dist/e2e-flow
+      - run: mkdir -p dist && cp target/release/gitimage dist/gitimage-${{ matrix.arch }} && dist/gitimage-${{ matrix.arch }} version
+      - uses: actions/upload-artifact@v4
+        with: { name: "dist-${{ matrix.arch }}", path: dist/, retention-days: 7 }
+
+  e2e:
+    needs: build
+    # Homelab runners (repo variable E2E_RUNS_ON) for this repo's own branches; pull requests
+    # from forks always run on GitHub-hosted runners.
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || vars.E2E_RUNS_ON || 'ubuntu-latest' }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        storage: [registry, s3]
+        # userns cannot run inside kind (runc cannot mount sysfs in a userns pod on a
+        # containerized node). kata-qemu needs /dev/kvm: set E2E_ISOLATIONS on KVM runners.
+        isolation: ${{ fromJSON(vars.E2E_ISOLATIONS || '["privileged","gvisor"]') }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: dist-amd64, path: dist }
+      - uses: azure/setup-helm@v4
+      - name: Tools
+        run: |
+          chmod +x dist/*
+          command -v ssh-keyscan >/dev/null || (sudo apt-get update -q && sudo apt-get install -yq openssh-client)
+      - name: e2e ${{ matrix.storage }} / ${{ matrix.isolation }}
+        env:
+          GITIMAGE_BINARY: dist/gitimage-amd64
+          E2E_TEST_BIN: dist/e2e-flow
+          CLUSTER: gitimage-e2e
+        run: ./hack/e2e/run.sh ${{ matrix.storage }} ${{ matrix.isolation }}
+      - name: Dump state on failure
+        if: failure()
+        run: |
+          export KUBECONFIG=$PWD/hack/.kubeconfig PATH=$PWD/hack/bin:$PATH
+          kubectl get pods,jobs,gitimages -A -o wide || true
+          kubectl -n gitimage-system logs -l app.kubernetes.io/name=gitimage --tail=300 --prefix || true
+      - name: Clean up
+        if: always()
+        run: ./hack/e2e/down.sh || true
+
+  release:
+    needs: [version, check, oci-conformance, build, e2e]
+    if: needs.version.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { pattern: dist-*, path: dist, merge-multiple: true }
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with: { registry: ghcr.io, username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+      - name: Multi-arch image
+        id: image
+        uses: docker/build-push-action@v6
+        with:
+          context: dist
+          file: Dockerfile.release
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ env.IMAGE }}:${{ env.VERSION }},${{ env.IMAGE }}:latest
+          sbom: true
+          provenance: mode=max
+      - uses: sigstore/cosign-installer@v3
+      - run: cosign sign --yes "$IMAGE@${{ steps.image.outputs.digest }}"
+      - uses: azure/setup-helm@v4
+      - name: Helm chart
+        run: |
+          sed -i "s/^version: .*/version: $VERSION/; s/^appVersion: .*/appVersion: \"$VERSION\"/" charts/gitimage/Chart.yaml
+          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+          helm package charts/gitimage -d dist
+          helm push "dist/gitimage-$VERSION.tgz" oci://ghcr.io/diverofdark/charts
+      - name: GitHub release
+        env: { GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}" }
+        run: |
+          cd dist && for a in amd64 arm64; do tar -czf "gitimage-$VERSION-linux-$a.tar.gz" "gitimage-$a"; done
+          gh release create "v$VERSION" --target "${{ github.sha }}" --title "v$VERSION" --generate-notes \
+            --notes "Image: \`$IMAGE:$VERSION\` (\`${{ steps.image.outputs.digest }}\`, cosign-signed). Chart: \`helm install gitimage oci://ghcr.io/diverofdark/charts/gitimage --version $VERSION\`" \
+            "gitimage-$VERSION-linux-amd64.tar.gz" "gitimage-$VERSION-linux-arm64.tar.gz" "gitimage-$VERSION.tgz"
+
+  docs:
+    needs: [version, release]
+    if: needs.version.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment: { name: github-pages, url: "${{ steps.deploy.outputs.page_url }}" }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@v2
+        with: { tool: mdbook }
+      - run: |
+          sed -i "s/{{VERSION}}/${{ needs.version.outputs.version }}/g" docs/src/*.md
+          mdbook build docs
+      - uses: actions/upload-pages-artifact@v3
+        with: { path: docs/book }
+      - id: deploy
+        uses: actions/deploy-pages@v4

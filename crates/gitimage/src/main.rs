@@ -9,10 +9,16 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use gitimage_api::Config;
 use kube::CustomResourceExt;
 
+/// Release version, injected by the pipeline (`GITIMAGE_VERSION`); the crate version otherwise.
+const VERSION: &str = match option_env!("GITIMAGE_VERSION") {
+    Some(v) => v,
+    None => env!("CARGO_PKG_VERSION"),
+};
+
 #[derive(Parser)]
 #[command(
     name = "gitimage",
-    version,
+    version = VERSION,
     about = "Git URL to running pod, built in-cluster"
 )]
 struct Cli {
@@ -163,7 +169,7 @@ async fn main() -> anyhow::Result<()> {
             return Ok(());
         }
         Command::Version => {
-            println!("gitimage {}", env!("CARGO_PKG_VERSION"));
+            println!("gitimage {VERSION}");
             return Ok(());
         }
         Command::CheckConfig { config } => {

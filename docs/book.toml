@@ -1,0 +1,14 @@
+[book]
+title = "GitImage"
+description = "Git URL to running pod, built in-cluster"
+authors = ["Kirill Orlov"]
+language = "en"
+src = "src"
+
+[output.html]
+git-repository-url = "https://github.com/DiverOfDark/gitimage"
+edit-url-template = "https://github.com/DiverOfDark/gitimage/edit/main/docs/{path}"
+site-url = "/gitimage/"
+
+[output.html.search]
+enable = true

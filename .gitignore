@@ -4,3 +4,4 @@
 .vscode/
 /hack/bin
 /hack/.kubeconfig
+/docs/book

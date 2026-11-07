@@ -23,6 +23,11 @@ case "$ISOLATION" in
 esac
 ./hack/e2e/image.sh
 ./hack/e2e/install.sh "$STORAGE" "$ISOLATION"
-cargo test -p e2e --test flow -- --ignored --test-threads 8
+export E2E_KUBECONFIG="$PWD/hack/.kubeconfig"
+if [ -n "${E2E_TEST_BIN:-}" ]; then
+  "$E2E_TEST_BIN" --ignored --test-threads 9   # prebuilt by the pipeline's build job
+else
+  cargo test -p e2e --test flow -- --ignored --test-threads 9
+fi
 ./hack/e2e/isolation-unavailable.sh "$STORAGE" "$ISOLATION"
 [ -n "${KEEP:-}" ] || ./hack/e2e/down.sh

@@ -105,3 +105,11 @@ hooks:
 
 podMonitor:
   enabled: false
+
+# Extra Kubernetes objects installed with the release. Maps or templated strings
+# (`tpl` is applied, so "{{ .Release.Namespace }}" works).
+extraObjects: []
+  # - apiVersion: objectbucket.io/v1alpha1
+  #   kind: ObjectBucketClaim
+  #   metadata: { name: gitimage, namespace: "{{ .Release.Namespace }}" }
+  #   spec: { bucketName: gitimage, storageClassName: ceph-bucket }

@@ -1,0 +1,9 @@
+# Release and CI image: prebuilt binaries from the pipeline (built on rust:bookworm, glibc 2.36).
+FROM gcr.io/distroless/cc-debian13:nonroot
+ARG TARGETARCH
+LABEL org.opencontainers.image.source="https://github.com/DiverOfDark/gitimage" \
+      org.opencontainers.image.description="Git URL to running pod, built in-cluster" \
+      org.opencontainers.image.licenses="Apache-2.0"
+COPY gitimage-${TARGETARCH} /usr/local/bin/gitimage
+USER 65532:65532
+ENTRYPOINT ["/usr/local/bin/gitimage"]

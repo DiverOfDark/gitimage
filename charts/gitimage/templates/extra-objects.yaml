@@ -1,0 +1,13 @@
+{{- /*
+Arbitrary extra manifests installed with the release (e.g. the ObjectBucketClaim or
+ExternalSecret for storage credentials, a RuntimeClass, NetworkPolicies). Each item is a map
+or a string; strings are rendered with `tpl`, so they can use chart values and helpers.
+*/ -}}
+{{- range .Values.extraObjects }}
+---
+{{- if typeIs "string" . }}
+{{ tpl . $ }}
+{{- else }}
+{{ tpl (toYaml .) $ }}
+{{- end }}
+{{- end }}

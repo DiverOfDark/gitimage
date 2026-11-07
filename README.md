@@ -32,6 +32,9 @@ spec:
 A pod created before its image exists waits as `SchedulingGated` (never `ImagePullBackOff`),
 then starts with the digest. Every new commit rolls the Deployment.
 
+**Docs:** [diverofdark.github.io/gitimage](https://diverofdark.github.io/gitimage/) ·
+**Releases:** every green push to `main` ships an image, a chart and a GitHub release.
+
 **Status:** pre-alpha. All v1 milestones implemented; e2e suite green on kind with registry and
 S3 storage under privileged, gVisor and Kata isolation.
 
@@ -39,6 +42,7 @@ S3 storage under privileged, gVisor and Kata isolation.
 
 ```sh
 helm install gitimage oci://ghcr.io/diverofdark/charts/gitimage -n gitimage-system --create-namespace \
+  --version <latest release> \
   --set buildPolicy.isolation.mode=runtimeClass --set buildPolicy.isolation.runtimeClassName=gvisor \
   --set storage.type=registry --set storage.registry.url=ghcr.io/acme/builds \
   --set storage.registry.pushSecret=registry-push
@@ -95,6 +99,9 @@ token scoped to `<namespace>/<gitimage>` that dies with the build Job.
 | `gitimage-system` | `gitimage-node` (DaemonSet, s3 mode only) | read-only OCI server on `127.0.0.1:25050` |
 | tenant namespaces | build Jobs, `gitimage-build` ConfigMap, `gitimage-build-egress` NetworkPolicy | one Job per commit; git credentials and build secrets stay here |
 
+Anything else the install needs (an ObjectBucketClaim, ExternalSecret, RuntimeClass...) goes in
+`extraObjects`: a list of manifests, maps or `tpl`-rendered strings.
+
 ## Develop
 
 ```sh
@@ -124,8 +131,8 @@ The e2e environment uses its own kubeconfig (`hack/.kubeconfig`); it never touch
 - S3 blobs over 5 GiB fail (single CopyObject after multipart upload); add a bucket lifecycle
   rule for the `uploads/` prefix to clean abandoned uploads.
 - Registry mode GC deletes manifests only; blob GC is the registry's job.
-- Talos, k3s and managed clouds are not yet covered by automated e2e; the nightly workflow
-  needs a self-hosted runner with `/dev/kvm` for Kata.
+- Talos, k3s and managed clouds are not yet covered by automated e2e; Kata e2e needs runners
+  with `/dev/kvm` (repository variables `E2E_RUNS_ON`, `E2E_ISOLATIONS`).
 
 ## License
 
