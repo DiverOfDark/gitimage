@@ -2,6 +2,7 @@
 # Renders the chart with several value sets and checks each config.yaml with the strict parser.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+[ -n "${GITIMAGE_BIN:-}" ] || cargo build -q -p gitimage
 bin=${GITIMAGE_BIN:-target/debug/gitimage}
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT

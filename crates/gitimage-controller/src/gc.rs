@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use gitimage_api::GitImage;
 use gitimage_oci::{Digest, Reference, Repo, Storage};
+use k8s_openapi::api::batch::v1::Job;
 use k8s_openapi::api::core::v1::Pod;
 use kube::ResourceExt;
 use kube::api::{Api, ListParams};
@@ -135,6 +136,24 @@ pub async fn collect(ctx: &Ctx, gi: &GitImage, pods: &[Pod]) -> anyhow::Result<u
             roots.push(d);
         }
     }
+    // Revisions still in flight: every build Job that exists (they live 1 h after finishing)
+    // and the newest commit. Their tags may be pushed but not yet recorded in status.
+    let jobs: Api<Job> = Api::namespaced(ctx.client.clone(), &ns);
+    let lp = ListParams::default().labels(&format!("{}={}", gitimage_api::keys::NAME_LABEL, name));
+    let in_flight: Vec<String> = jobs
+        .list(&lp)
+        .await?
+        .items
+        .iter()
+        .filter_map(|j| {
+            j.metadata
+                .labels
+                .as_ref()?
+                .get(gitimage_api::keys::REVISION_LABEL)
+                .cloned()
+        })
+        .chain(status.latest_revision.clone())
+        .collect();
     let kept_tags: HashSet<String> = status
         .builds
         .iter()
@@ -142,6 +161,7 @@ pub async fn collect(ctx: &Ctx, gi: &GitImage, pods: &[Pod]) -> anyhow::Result<u
         .take(KEEP_BUILDS)
         .map(|b| b.revision.clone())
         .chain([CACHE_TAG.to_string()])
+        .chain(in_flight)
         .collect();
     for (tag, d) in &index.tags {
         if kept_tags.contains(tag) {
