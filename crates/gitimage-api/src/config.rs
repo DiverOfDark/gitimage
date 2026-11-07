@@ -72,6 +72,12 @@ impl Config {
                     "buildPolicy.isolation.mode privileged needs allowPrivileged: true".into(),
                 ));
             }
+            mode if iso.privileged_in_sandbox && mode != IsolationMode::RuntimeClass => {
+                return Err(ConfigError::Invalid(
+                    "buildPolicy.isolation.privilegedInSandbox is only valid with mode runtimeClass"
+                        .into(),
+                ));
+            }
             _ => {}
         }
         match self.storage.kind {
@@ -116,6 +122,19 @@ pub struct Isolation {
     pub runtime_class_name: Option<String>,
     #[serde(default)]
     pub allow_privileged: bool,
+    /// runtimeClass mode only: run rootful BuildKit as a privileged container *inside* the
+    /// sandbox. Needed for Kata, whose shared filesystem drops the file capabilities rootless
+    /// BuildKit's newuidmap relies on. Safe only when the runtime keeps privileged inside the
+    /// guest (containerd `privileged_without_host_devices = true`, the kata-deploy default).
+    #[serde(default)]
+    pub privileged_in_sandbox: bool,
+}
+
+impl Isolation {
+    /// Whether builds run rootful BuildKit (privileged mode, or privileged inside a sandbox).
+    pub fn rootful(&self) -> bool {
+        self.mode == IsolationMode::Privileged || self.privileged_in_sandbox
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -222,8 +241,12 @@ impl PushEndpoint {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BuildDefaults {
+    /// Rootless BuildKit image (userns, and runtimeClass without privilegedInSandbox).
     #[serde(default = "default_buildkit_image")]
     pub image: String,
+    /// Rootful BuildKit image (privileged, and runtimeClass with privilegedInSandbox).
+    #[serde(default = "default_buildkit_rootful_image")]
+    pub rootful_image: String,
     #[serde(default)]
     pub default_resources: Resources,
     #[serde(default = "default_deadline")]
@@ -242,6 +265,7 @@ impl Default for BuildDefaults {
     fn default() -> Self {
         Self {
             image: default_buildkit_image(),
+            rootful_image: default_buildkit_rootful_image(),
             default_resources: Resources::default(),
             active_deadline: default_deadline(),
             platforms: default_platforms(),
@@ -262,6 +286,10 @@ impl BuildDefaults {
 
 fn default_buildkit_image() -> String {
     "moby/buildkit:v0.34.2-rootless".into()
+}
+
+fn default_buildkit_rootful_image() -> String {
+    "moby/buildkit:v0.34.2".into()
 }
 
 fn default_deadline() -> String {
@@ -358,6 +386,26 @@ network: { clusterCIDRs: [10.244.0.0/16, 10.96.0.0/12] }
         let bad = HOMELAB.replace(", runtimeClassName: kata", "");
         let err = Config::from_yaml(&bad).unwrap_err().to_string();
         assert!(err.contains("runtimeClassName"), "{err}");
+    }
+
+    #[test]
+    fn privileged_in_sandbox_needs_runtime_class() {
+        let ok = HOMELAB.replace(
+            "runtimeClassName: kata",
+            "runtimeClassName: kata, privilegedInSandbox: true",
+        );
+        assert!(
+            Config::from_yaml(&ok)
+                .unwrap()
+                .build_policy
+                .isolation
+                .rootful()
+        );
+        let bad = HOMELAB.replace(
+            "mode: runtimeClass, runtimeClassName: kata",
+            "mode: userns, privilegedInSandbox: true",
+        );
+        assert!(Config::from_yaml(&bad).is_err());
     }
 
     #[test]

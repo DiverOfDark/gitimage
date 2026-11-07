@@ -1,0 +1,19 @@
+name: nightly
+on:
+  schedule: [{ cron: "0 3 * * *" }]
+  workflow_dispatch:
+
+# Needs a self-hosted runner labelled `kvm` with /dev/kvm, docker, and talosctl.
+jobs:
+  k3s-kata:
+    runs-on: [self-hosted, kvm]
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./hack/nightly/k3s-kata.sh
+  talos-kata:
+    runs-on: [self-hosted, kvm]
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./hack/nightly/talos-kata.sh

@@ -28,7 +28,8 @@ pub struct IsolationUnavailable(pub String);
 /// Hash of everything the check depends on.
 pub fn check_key(cfg: &Config) -> String {
     let iso = serde_json::to_string(&cfg.build_policy.isolation).unwrap_or_default();
-    hex::encode(&sha2::Sha256::digest(format!("{iso}|{}", cfg.build.image).as_bytes())[..8])
+    let image = crate::job::BuildkitLayout::for_config(cfg).image;
+    hex::encode(&sha2::Sha256::digest(format!("{iso}|{image}").as_bytes())[..8])
 }
 
 /// The check Job: the build overlay plus `buildctl-daemonless.sh debug workers`.
@@ -44,14 +45,15 @@ pub fn check_job(cfg: &Config, ns: &str) -> Job {
         }]),
         ..Default::default()
     };
+    let layout = crate::job::BuildkitLayout::for_config(cfg);
     let mut c = Container {
         name: "buildkit".into(),
-        image: Some(cfg.build.image.clone()),
+        image: Some(layout.image.clone()),
         command: Some(vec!["buildctl-daemonless.sh".into()]),
         args: Some(vec!["debug".into(), "workers".into()]),
         volume_mounts: Some(vec![VolumeMount {
             name: "buildkit-state".into(),
-            mount_path: "/home/user/.local/share/buildkit".into(),
+            mount_path: layout.state_dir.into(),
             ..Default::default()
         }]),
         termination_message_policy: Some("FallbackToLogsOnError".into()),

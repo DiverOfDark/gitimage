@@ -22,6 +22,7 @@ data:
         runtimeClassName: {{ . | quote }}
         {{- end }}
         allowPrivileged: {{ .Values.buildPolicy.isolation.allowPrivileged }}
+        privilegedInSandbox: {{ .Values.buildPolicy.isolation.privilegedInSandbox }}
       egress:
         allowInternet: {{ .Values.buildPolicy.egress.allowInternet }}
         denyClusterCIDRs: {{ .Values.buildPolicy.egress.denyClusterCIDRs }}
@@ -51,6 +52,7 @@ data:
       port: 5000
     build:
       image: {{ .Values.build.image | quote }}
+      rootfulImage: {{ .Values.build.rootfulImage | quote }}
       activeDeadline: {{ .Values.build.activeDeadline | quote }}
       platforms: {{ toJson .Values.build.platforms }}
       cache: {{ .Values.build.cache }}

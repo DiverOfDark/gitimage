@@ -16,6 +16,11 @@ buildPolicy:
     runtimeClassName: ""
     # Must be true to use mode privileged. Trusted repos only.
     allowPrivileged: false
+    # runtimeClass only: rootful BuildKit, privileged INSIDE the sandbox. Required for Kata
+    # (its shared filesystem drops the file caps rootless BuildKit needs). Safe only when the
+    # runtime keeps privileged in the guest: containerd privileged_without_host_devices = true
+    # (the kata-deploy default).
+    privilegedInSandbox: false
   egress:
     allowInternet: true
     denyClusterCIDRs: true
@@ -44,6 +49,7 @@ storage:
 
 build:
   image: moby/buildkit:v0.34.2-rootless
+  rootfulImage: moby/buildkit:v0.34.2
   activeDeadline: 1h
   platforms: [linux/amd64]
   # max | min | off

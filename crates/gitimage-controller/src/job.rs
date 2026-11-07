@@ -27,7 +27,34 @@ pub const BUILD_CONFIGMAP: &str = "gitimage-build";
 pub const EGRESS_POLICY: &str = "gitimage-build-egress";
 
 const WORKSPACE: &str = "/workspace";
-const BUILDKIT_HOME: &str = "/home/user";
+
+/// Where the BuildKit image keeps its state and reads its config.
+pub struct BuildkitLayout {
+    pub image: String,
+    pub state_dir: &'static str,
+    pub docker_config_dir: &'static str,
+    pub buildkitd_toml: &'static str,
+}
+
+impl BuildkitLayout {
+    pub fn for_config(cfg: &Config) -> Self {
+        if cfg.build_policy.isolation.rootful() {
+            Self {
+                image: cfg.build.rootful_image.clone(),
+                state_dir: "/var/lib/buildkit",
+                docker_config_dir: "/root/.docker",
+                buildkitd_toml: "/etc/buildkit/buildkitd.toml",
+            }
+        } else {
+            Self {
+                image: cfg.build.image.clone(),
+                state_dir: "/home/user/.local/share/buildkit",
+                docker_config_dir: "/home/user/.docker",
+                buildkitd_toml: "/home/user/.config/buildkit/buildkitd.toml",
+            }
+        }
+    }
+}
 const GIT_CREDS_DIR: &str = "/etc/gitimage/git";
 const SECRETS_DIR: &str = "/run/secrets";
 
@@ -239,7 +266,15 @@ pub fn pod_overlay(cfg: &Config, pod: &mut PodSpec, buildkit: &mut Container) {
         ..Default::default()
     };
     let env = buildkit.env.get_or_insert_with(Vec::new);
+    let privileged = SecurityContext {
+        privileged: Some(true),
+        ..Default::default()
+    };
     match iso.mode {
+        IsolationMode::RuntimeClass if iso.privileged_in_sandbox => {
+            pod.runtime_class_name = iso.runtime_class_name.clone();
+            buildkit.security_context = Some(privileged);
+        }
         IsolationMode::RuntimeClass => {
             pod.runtime_class_name = iso.runtime_class_name.clone();
             buildkit.security_context = Some(unconfined);
@@ -259,10 +294,7 @@ pub fn pod_overlay(cfg: &Config, pod: &mut PodSpec, buildkit: &mut Container) {
             });
         }
         IsolationMode::Privileged => {
-            buildkit.security_context = Some(SecurityContext {
-                privileged: Some(true),
-                ..Default::default()
-            });
+            buildkit.security_context = Some(privileged);
         }
     }
 }
@@ -390,23 +422,20 @@ pub fn build_job(gi: &GitImage, cfg: &Config, p: &BuildParams) -> Job {
         ..Default::default()
     };
 
+    let layout = BuildkitLayout::for_config(cfg);
     let (args, mut env) = buildctl_args(gi, cfg, p);
     env.push(EnvVar {
         name: "DOCKER_CONFIG".into(),
-        value: Some(format!("{BUILDKIT_HOME}/.docker")),
+        value: Some(layout.docker_config_dir.to_string()),
         ..Default::default()
     });
     let mut bk_mounts = vec![
         mount("workspace", WORKSPACE, true),
-        mount(
-            "buildkit-state",
-            &format!("{BUILDKIT_HOME}/.local/share/buildkit"),
-            false,
-        ),
-        mount("push-auth", &format!("{BUILDKIT_HOME}/.docker"), true),
+        mount("buildkit-state", layout.state_dir, false),
+        mount("push-auth", layout.docker_config_dir, true),
         VolumeMount {
             name: "build-config".into(),
-            mount_path: format!("{BUILDKIT_HOME}/.config/buildkit/buildkitd.toml"),
+            mount_path: layout.buildkitd_toml.to_string(),
             sub_path: Some("buildkitd.toml".into()),
             read_only: Some(true),
             ..Default::default()
@@ -451,7 +480,7 @@ pub fn build_job(gi: &GitImage, cfg: &Config, p: &BuildParams) -> Job {
         .or_else(|| resources(&cfg.build.default_resources));
     let mut buildkit = Container {
         name: "buildkit".into(),
-        image: Some(cfg.build.image.clone()),
+        image: Some(layout.image.clone()),
         command: Some(vec!["buildctl-daemonless.sh".into()]),
         args: Some(args),
         env: Some(env),

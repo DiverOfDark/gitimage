@@ -1,0 +1,29 @@
+name: e2e
+on:
+  pull_request:
+  push: { branches: [main] }
+
+jobs:
+  kind:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        storage: [registry, s3]
+        # userns cannot run inside kind (runc cannot mount sysfs in a userns pod on a
+        # containerized node); it is covered by the nightly k3s job.
+        isolation: [privileged, gvisor]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with: { toolchain: "1.99" }
+      - uses: Swatinem/rust-cache@v2
+      - uses: azure/setup-helm@v4
+      - run: ./hack/e2e/run.sh ${{ matrix.storage }} ${{ matrix.isolation }}
+      - name: Dump state on failure
+        if: failure()
+        run: |
+          export KUBECONFIG=$PWD/hack/.kubeconfig PATH=$PWD/hack/bin:$PATH
+          kubectl get pods,jobs,gitimages -A -o wide || true
+          kubectl -n gitimage-system logs -l app.kubernetes.io/name=gitimage --tail=200 --prefix || true
