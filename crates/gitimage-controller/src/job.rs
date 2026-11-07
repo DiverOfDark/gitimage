@@ -780,6 +780,28 @@ build:
     }
 
     #[test]
+    fn kata_runs_rootful_buildkit_privileged_in_the_sandbox() {
+        let mut cfg = config();
+        cfg.build_policy.isolation.privileged_in_sandbox = true;
+        let job = build_job(&gitimage(), &cfg, &params());
+        let pod = job.spec.unwrap().template.spec.unwrap();
+        assert_eq!(pod.runtime_class_name.as_deref(), Some("kata"));
+        let c = &pod.containers[0];
+        assert_eq!(c.image.as_deref(), Some("moby/buildkit:v0.34.2"));
+        assert_eq!(c.security_context.as_ref().unwrap().privileged, Some(true));
+        let mounts: Vec<&str> = c
+            .volume_mounts
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|m| m.mount_path.as_str())
+            .collect();
+        assert!(mounts.contains(&"/var/lib/buildkit"));
+        assert!(mounts.contains(&"/etc/buildkit/buildkitd.toml"));
+        assert!(mounts.contains(&"/root/.docker"));
+    }
+
+    #[test]
     fn egress_policy_snapshot() {
         insta::assert_yaml_snapshot!(egress_policy("team-a", &config(), "gitimage-system"));
     }

@@ -17,7 +17,10 @@ if ! command -v kubectl >/dev/null; then
   chmod +x hack/bin/kubectl
 fi
 ./hack/e2e/up.sh
-[ "$ISOLATION" = gvisor ] && ./hack/e2e/gvisor.sh
+case "$ISOLATION" in
+  gvisor) ./hack/e2e/gvisor.sh ;;
+  kata*) ./hack/e2e/kata.sh ;;
+esac
 ./hack/e2e/image.sh
 ./hack/e2e/install.sh "$STORAGE" "$ISOLATION"
 cargo test -p e2e --test flow -- --ignored --test-threads 8

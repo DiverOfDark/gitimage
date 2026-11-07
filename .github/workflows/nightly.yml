@@ -3,17 +3,20 @@ on:
   schedule: [{ cron: "0 3 * * *" }]
   workflow_dispatch:
 
-# Needs a self-hosted runner labelled `kvm` with /dev/kvm, docker, and talosctl.
+# Kata needs /dev/kvm: GitHub-hosted runners do not expose it, so this runs on a self-hosted
+# runner labelled `kvm` (bare metal or nested virtualization, docker, /dev/vhost-vsock).
+# Kata runs inside kind there (hack/e2e/kata.sh enlarges the nodes' /dev/shm for guest RAM).
 jobs:
-  k3s-kata:
+  kind-kata:
     runs-on: [self-hosted, kvm]
     timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        storage: [registry, s3]
     steps:
       - uses: actions/checkout@v4
-      - run: ./hack/nightly/k3s-kata.sh
-  talos-kata:
-    runs-on: [self-hosted, kvm]
-    timeout-minutes: 90
-    steps:
-      - uses: actions/checkout@v4
-      - run: ./hack/nightly/talos-kata.sh
+      - uses: dtolnay/rust-toolchain@master
+        with: { toolchain: "1.99" }
+      - uses: azure/setup-helm@v4
+      - run: CLUSTER=gitimage-nightly-${{ matrix.storage }} ./hack/e2e/run.sh ${{ matrix.storage }} kata-qemu
