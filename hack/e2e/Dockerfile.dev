@@ -1,0 +1,12 @@
+# Local e2e image: cached cargo build on bookworm (glibc 2.36), distroless runtime.
+FROM rust:1.99-bookworm AS build
+WORKDIR /src
+COPY . .
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/src/target \
+    cargo build --release -p gitimage && cp target/release/gitimage /gitimage
+
+FROM gcr.io/distroless/cc-debian13:nonroot
+COPY --from=build /gitimage /usr/local/bin/gitimage
+USER 65532:65532
+ENTRYPOINT ["/usr/local/bin/gitimage"]

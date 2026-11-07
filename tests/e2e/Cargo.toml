@@ -1,5 +1,6 @@
 [package]
 name = "e2e"
+description = "End-to-end tests against the kind environment from hack/e2e (PRD N6)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -7,6 +8,18 @@ publish = false
 
 [dependencies]
 gitimage-api = { workspace = true }
+kube = { workspace = true }
+k8s-openapi = { workspace = true }
+tokio = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+anyhow = { workspace = true }
+base64 = { workspace = true }
+rand = { workspace = true }
+futures = { workspace = true }
+flate2 = "1"
 
 [lints]
 workspace = true

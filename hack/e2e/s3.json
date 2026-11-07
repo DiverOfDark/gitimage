@@ -1,0 +1,9 @@
+{
+  "identities": [
+    {
+      "name": "gitimage",
+      "credentials": [{ "accessKey": "gitimage", "secretKey": "gitimage-secret" }],
+      "actions": ["Admin", "Read", "Write", "List", "Tagging"]
+    }
+  ]
+}
