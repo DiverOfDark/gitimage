@@ -12,6 +12,8 @@ jobs:
     timeout-minutes: 90
     strategy:
       fail-fast: false
+      # One runner, shared docker names (kind-registry, e2e-s3, e2e-gitea): run one at a time.
+      max-parallel: 1
       matrix:
         storage: [registry, s3]
     steps:
@@ -19,4 +21,4 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with: { toolchain: "1.99" }
       - uses: azure/setup-helm@v4
-      - run: CLUSTER=gitimage-nightly-${{ matrix.storage }} ./hack/e2e/run.sh ${{ matrix.storage }} kata-qemu
+      - run: ./hack/e2e/run.sh ${{ matrix.storage }} kata-qemu
