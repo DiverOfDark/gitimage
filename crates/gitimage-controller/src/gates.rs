@@ -18,6 +18,11 @@ use kube::{Resource, ResourceExt};
 
 use crate::context::Ctx;
 
+/// A pod still waiting is looked at again this often. The GitImage watch that triggers this
+/// controller and the GitImage cache it reads are separate streams, so a status update can
+/// arrive here before the cache has it; never rely on a single event to release a pod.
+const STILL_GATED: Duration = Duration::from_secs(10);
+
 static NOT_FOUND_REPORTED: Mutex<Option<HashSet<String>>> = Mutex::new(None);
 
 #[derive(Debug, thiserror::Error)]
@@ -69,10 +74,10 @@ async fn reconcile(pod: Arc<Pod>, ctx: Arc<Ctx>) -> Result<Action, Error> {
 
 async fn report_missing(ctx: &Ctx, pod: &Pod, missing: &[String]) -> Result<Action, Error> {
     let Some(uid) = pod.metadata.uid.clone() else {
-        return Ok(Action::await_change());
+        return Ok(Action::requeue(STILL_GATED));
     };
     if missing.is_empty() {
-        return Ok(Action::await_change());
+        return Ok(Action::requeue(STILL_GATED));
     }
     let first = {
         let mut set = NOT_FOUND_REPORTED.lock().unwrap();
@@ -92,7 +97,7 @@ async fn report_missing(ctx: &Ctx, pod: &Pod, missing: &[String]) -> Result<Acti
         };
         let _ = ctx.recorder.publish(&ev, &pod.object_ref(&())).await;
     }
-    Ok(Action::await_change())
+    Ok(Action::requeue(STILL_GATED))
 }
 
 fn error_policy(_pod: Arc<Pod>, err: &Error, ctx: Arc<Ctx>) -> Action {
