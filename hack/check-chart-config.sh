@@ -20,6 +20,12 @@ check --set buildPolicy.isolation.mode=runtimeClass --set buildPolicy.isolation.
   --set build.defaultResources.requests.cpu=1
 check --set buildPolicy.isolation.mode=privileged --set buildPolicy.isolation.allowPrivileged=true \
   --set storage.registry.url=r/b --set storage.registry.pushSecret=p --set build.cache=off
+check --set buildPolicy.isolation.mode=runtimeClass --set buildPolicy.isolation.runtimeClassName=sysbox-runc \
+  --set buildPolicy.isolation.rootfulInSandbox=true --set storage.registry.url=r/b --set storage.registry.pushSecret=p
+if check --set buildPolicy.isolation.mode=userns --set buildPolicy.isolation.rootfulInSandbox=true \
+  --set storage.registry.url=r/b --set storage.registry.pushSecret=p 2>/dev/null; then
+  echo "FAIL: rootfulInSandbox accepted outside mode runtimeClass"; exit 1
+fi
 if helm template t charts/gitimage --set storage.registry.url=r --set storage.registry.pushSecret=p >/dev/null 2>&1; then
   echo "FAIL: chart rendered without buildPolicy.isolation.mode"; exit 1
 fi

@@ -58,6 +58,7 @@ See [`examples/homelab/values.yaml`](examples/homelab/values.yaml) for Talos + K
 | --- | --- | --- |
 | Kata (VM per build) | `mode: runtimeClass`, `runtimeClassName: kata-qemu`, `privilegedInSandbox: true` | kind + kata-deploy 4.3.1, all e2e tests |
 | gVisor | `mode: runtimeClass`, `runtimeClassName: gvisor` | kind + runsc, all e2e tests |
+| Sysbox | `mode: runtimeClass`, `runtimeClassName: sysbox-runc`, `rootfulInSandbox: true` (rootful BuildKit, unprivileged, `hostUsers: false`; Pod Security `baseline`) | not in CI; kind + Sysbox 0.7.1 locally (`./hack/e2e/run.sh registry sysbox`) |
 | User namespaces | `mode: userns` (rootless BuildKit, `hostUsers: false`) | not in kind: runc cannot mount sysfs in a userns pod on a containerized node |
 | Privileged | `mode: privileged`, `allowPrivileged: true` | kind, all e2e tests; trusted repos only |
 

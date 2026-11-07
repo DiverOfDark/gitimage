@@ -4,7 +4,7 @@
 cargo test --workspace                 # unit, storage, router, snapshot tests
 ./hack/oci-conformance.sh              # OCI distribution-spec conformance
 ./hack/check-chart-config.sh           # chart renders configs the controller accepts
-./hack/e2e/run.sh s3 gvisor            # kind e2e: registry|s3 x privileged|gvisor|kata-qemu
+./hack/e2e/run.sh s3 gvisor            # kind e2e: registry|s3 x privileged|gvisor|kata-qemu|sysbox
 KEEP=1 ./hack/e2e/run.sh registry privileged   # keep the cluster for debugging
 ```
 

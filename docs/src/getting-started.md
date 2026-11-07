@@ -8,6 +8,7 @@ You need Kubernetes 1.30+ with containerd, Helm 3, and either an OCI registry or
 | --- | --- |
 | Nodes with `/dev/kvm` and Kata installed | `mode: runtimeClass`, `runtimeClassName: kata-qemu`, `privilegedInSandbox: true` |
 | gVisor installed (GKE Sandbox, `runsc`) | `mode: runtimeClass`, `runtimeClassName: gvisor` |
+| Sysbox installed (`sysbox-deploy-k8s`) | `mode: runtimeClass`, `runtimeClassName: sysbox-runc`, `rootfulInSandbox: true` |
 | Kubernetes 1.33+ on VMs or bare metal | `mode: userns` |
 | Trusted repositories only | `mode: privileged`, `allowPrivileged: true` |
 
@@ -50,7 +51,8 @@ does not.
 
 ## 3. Build something
 
-Build pods need the `privileged` Pod Security level in their namespace (see
+Build pods need the `privileged` Pod Security level in their namespace (`baseline` with
+Sysbox; see
 [Security model](operations/security.md)).
 
 ```sh

@@ -118,6 +118,7 @@ jobs:
         storage: [registry, s3]
         # userns cannot run inside kind (runc cannot mount sysfs in a userns pod on a
         # containerized node). kata-qemu needs /dev/kvm: set E2E_ISOLATIONS on KVM runners.
+        # sysbox (hack/e2e/sysbox.sh) is opt-in via E2E_ISOLATIONS as well.
         isolation: ${{ fromJSON(vars.E2E_ISOLATIONS || '["privileged","gvisor"]') }}
     steps:
       - uses: actions/checkout@v4

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One-shot e2e: ./hack/e2e/run.sh <registry|s3> <privileged|gvisor|userns|<runtimeClass>>
+# One-shot e2e: ./hack/e2e/run.sh <registry|s3> <privileged|gvisor|sysbox|kata-qemu|userns|<runtimeClass>>
 # Creates the environment if needed, builds and loads the image, installs, runs the suite and
 # the IsolationUnavailable check. Set KEEP=1 to keep the cluster afterwards.
 set -euo pipefail
@@ -19,6 +19,7 @@ fi
 ./hack/e2e/up.sh
 case "$ISOLATION" in
   gvisor) ./hack/e2e/gvisor.sh ;;
+  sysbox) ./hack/e2e/sysbox.sh ;;
   kata*) ./hack/e2e/kata.sh ;;
 esac
 ./hack/e2e/image.sh

@@ -1,0 +1,163 @@
+---
+source: crates/gitimage-controller/src/job.rs
+expression: job
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  annotations:
+    gitimage.dev/skip-if-tree: tree123
+  labels:
+    app.kubernetes.io/managed-by: gitimage
+    gitimage.dev/name: myapp
+    gitimage.dev/revision: 3f2c9e1aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    gitimage.dev/role: build
+  name: myapp-3f2c9e1
+  namespace: team-a
+  ownerReferences:
+    - apiVersion: gitimage.dev/v1alpha1
+      controller: true
+      kind: GitImage
+      name: myapp
+      uid: uid-1
+spec:
+  activeDeadlineSeconds: 3600
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/managed-by: gitimage
+        gitimage.dev/name: myapp
+        gitimage.dev/revision: 3f2c9e1aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+        gitimage.dev/role: build
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - args:
+            - build
+            - "--frontend=dockerfile.v0"
+            - "--local=context=/workspace/services/api"
+            - "--local=dockerfile=/workspace/services/api"
+            - "--opt=filename=Dockerfile"
+            - "--output=type=image,name=gitimage-push.gitimage-system.svc:5000/team-a/myapp:3f2c9e1aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,push=true,oci-mediatypes=true"
+            - "--progress=rawjson"
+            - "--opt=platform=linux/amd64"
+            - "--import-cache=type=registry,ref=gitimage-push.gitimage-system.svc:5000/team-a/myapp:buildcache"
+            - "--export-cache=type=registry,ref=gitimage-push.gitimage-system.svc:5000/team-a/myapp:buildcache,mode=max,oci-mediatypes=true,image-manifest=true"
+            - "--opt=label:org.opencontainers.image.revision=3f2c9e1aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            - "--opt=label:org.opencontainers.image.source=https://github.com/you/myapp.git"
+            - "--opt=build-arg:NODE_ENV=production $$(HOME)"
+            - "--opt=build-arg:TOKEN=$(GITIMAGE_ARG_TOKEN)"
+            - "--secret=id=npmrc,src=/run/secrets/npmrc"
+          command:
+            - buildctl-daemonless.sh
+          env:
+            - name: GITIMAGE_ARG_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  key: t
+                  name: tok
+                  optional: false
+            - name: DOCKER_CONFIG
+              value: /root/.docker
+          image: "moby/buildkit:v0.34.2"
+          name: buildkit
+          securityContext:
+            privileged: false
+          terminationMessagePolicy: FallbackToLogsOnError
+          volumeMounts:
+            - mountPath: /workspace
+              name: workspace
+              readOnly: true
+            - mountPath: /var/lib/buildkit
+              name: buildkit-state
+              readOnly: false
+            - mountPath: /root/.docker
+              name: push-auth
+              readOnly: true
+            - mountPath: /etc/buildkit/buildkitd.toml
+              name: build-config
+              readOnly: true
+              subPath: buildkitd.toml
+            - mountPath: /etc/gitimage/ca.crt
+              name: build-config
+              readOnly: true
+              subPath: ca.crt
+            - mountPath: /run/secrets/npmrc
+              name: build-secret-npmrc
+              readOnly: true
+              subPath: npmrc
+      enableServiceLinks: false
+      hostUsers: false
+      initContainers:
+        - args:
+            - clone
+            - "--url=https://user@github.com/you/myapp.git"
+            - "--sha=3f2c9e1aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            - "--dest=/workspace"
+            - "--context=services/api"
+            - "--log-format=json"
+            - "--skip-if-tree=tree123"
+            - "--credentials-dir=/etc/gitimage/git"
+          image: "ghcr.io/diverofdark/gitimage:test"
+          name: clone
+          resources:
+            limits:
+              memory: 512Mi
+            requests:
+              cpu: 50m
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+            runAsGroup: 65532
+            runAsNonRoot: true
+            runAsUser: 65532
+            seccompProfile:
+              type: RuntimeDefault
+          terminationMessagePolicy: File
+          volumeMounts:
+            - mountPath: /workspace
+              name: workspace
+              readOnly: false
+            - mountPath: /tmp
+              name: tmp
+              readOnly: false
+            - mountPath: /etc/gitimage/git
+              name: git-credentials
+              readOnly: true
+      restartPolicy: Never
+      runtimeClassName: sysbox-runc
+      securityContext:
+        fsGroup: 1000
+      volumes:
+        - emptyDir: {}
+          name: workspace
+        - emptyDir: {}
+          name: buildkit-state
+        - emptyDir: {}
+          name: tmp
+        - name: push-auth
+          secret:
+            items:
+              - key: config.json
+                path: config.json
+            secretName: myapp-3f2c9e1-push
+        - configMap:
+            name: gitimage-build
+          name: build-config
+        - name: git-credentials
+          secret:
+            defaultMode: 288
+            secretName: myapp-git
+        - name: build-secret-npmrc
+          secret:
+            items:
+              - key: token
+                mode: 288
+                path: npmrc
+            secretName: npm-token
+  ttlSecondsAfterFinished: 3600

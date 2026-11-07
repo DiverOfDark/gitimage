@@ -21,6 +21,10 @@ buildPolicy:
     # runtime keeps privileged in the guest: containerd privileged_without_host_devices = true
     # (the kata-deploy default).
     privilegedInSandbox: false
+    # runtimeClass only: rootful BuildKit as an UNPRIVILEGED container in a pod user namespace
+    # (hostUsers: false). For Sysbox (runtimeClassName: sysbox-runc), which virtualizes
+    # procfs/sysfs; build pods then pass Pod Security baseline. Excludes privilegedInSandbox.
+    rootfulInSandbox: false
   egress:
     allowInternet: true
     denyClusterCIDRs: true

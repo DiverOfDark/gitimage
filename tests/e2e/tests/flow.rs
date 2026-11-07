@@ -485,17 +485,43 @@ async fn gc_keeps_five_newest_builds() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The installed isolation's Pod Security level for build pods, from `gitimage-config`.
+async fn build_pod_security_level(client: &kube::Client) -> anyhow::Result<&'static str> {
+    let cms: kube::Api<k8s_openapi::api::core::v1::ConfigMap> =
+        kube::Api::namespaced(client.clone(), "gitimage-system");
+    let cm = cms.get("gitimage-config").await?;
+    let yaml = cm
+        .data
+        .unwrap_or_default()
+        .remove("config.yaml")
+        .unwrap_or_default();
+    let cfg = gitimage_api::Config::from_yaml(&yaml)?;
+    Ok(cfg.build_policy.isolation.pod_security_level())
+}
+
+async fn label_pod_security(client: &kube::Client, ns: &str, level: &str) -> anyhow::Result<()> {
+    let nss: kube::Api<k8s_openapi::api::core::v1::Namespace> = kube::Api::all(client.clone());
+    let patch = serde_json::json!({ "metadata": { "labels": { "pod-security.kubernetes.io/enforce": level } } });
+    nss.patch(ns, &PatchParams::default(), &Patch::Merge(&patch))
+        .await?;
+    Ok(())
+}
+
 /// Pod Security: a build that cannot create its pod fails fast with the reason, instead of
-/// waiting for the build deadline.
+/// waiting for the build deadline. The namespace gets the level just below what the configured
+/// isolation needs (`baseline` for `privileged`, `restricted` for `baseline`).
 #[tokio::test]
 #[ignore]
 async fn pod_security_rejection_fails_fast() -> anyhow::Result<()> {
     let client = client().await?;
+    let needed = build_pod_security_level(&client).await?;
+    let stricter = if needed == "baseline" {
+        "restricted"
+    } else {
+        "baseline"
+    };
     let ns = TestNs::new(&client, "e2e-psa").await?;
-    let nss: kube::Api<k8s_openapi::api::core::v1::Namespace> = kube::Api::all(client.clone());
-    let patch = serde_json::json!({ "metadata": { "labels": { "pod-security.kubernetes.io/enforce": "baseline" } } });
-    nss.patch(&ns.name, &PatchParams::default(), &Patch::Merge(&patch))
-        .await?;
+    label_pod_security(&client, &ns.name, stricter).await?;
     let gitea = Gitea::default();
     let repo = unique("psa");
     gitea.create_repo(&repo, false).await?;
@@ -515,8 +541,35 @@ async fn pod_security_rejection_fails_fast() -> anyhow::Result<()> {
     })
     .await?;
     assert!(
-        msg.contains("pod-security.kubernetes.io/enforce=privileged"),
+        msg.contains(&format!("pod-security.kubernetes.io/enforce={needed}")),
         "{msg}"
     );
+    Ok(())
+}
+
+/// Isolations documented as Pod Security `baseline` (Sysbox, `rootfulInSandbox`) build in a
+/// namespace that enforces `baseline`. A no-op for isolations that need `privileged`.
+#[tokio::test]
+#[ignore]
+async fn baseline_isolation_builds_under_baseline() -> anyhow::Result<()> {
+    let client = client().await?;
+    if build_pod_security_level(&client).await? != "baseline" {
+        return Ok(());
+    }
+    let ns = TestNs::new(&client, "e2e-baseline").await?;
+    label_pod_security(&client, &ns.name, "baseline").await?;
+    let gitea = Gitea::default();
+    let repo = unique("baseline");
+    gitea.create_repo(&repo, false).await?;
+    let sha = gitea
+        .commit(
+            &repo,
+            "main",
+            &[("Dockerfile", &dockerfile("baseline"))],
+            "baseline",
+        )
+        .await?;
+    create_gitimage(&ns, "app", &format!("url: {}", Gitea::https_url(&repo))).await?;
+    wait_built(&ns, "app", &sha, BUILD).await?;
     Ok(())
 }

@@ -23,6 +23,7 @@ data:
         {{- end }}
         allowPrivileged: {{ .Values.buildPolicy.isolation.allowPrivileged }}
         privilegedInSandbox: {{ .Values.buildPolicy.isolation.privilegedInSandbox }}
+        rootfulInSandbox: {{ .Values.buildPolicy.isolation.rootfulInSandbox }}
       egress:
         allowInternet: {{ .Values.buildPolicy.egress.allowInternet }}
         denyClusterCIDRs: {{ .Values.buildPolicy.egress.denyClusterCIDRs }}

@@ -78,7 +78,19 @@ impl Config {
                         .into(),
                 ));
             }
+            mode if iso.rootful_in_sandbox && mode != IsolationMode::RuntimeClass => {
+                return Err(ConfigError::Invalid(
+                    "buildPolicy.isolation.rootfulInSandbox is only valid with mode runtimeClass"
+                        .into(),
+                ));
+            }
             _ => {}
+        }
+        if iso.privileged_in_sandbox && iso.rootful_in_sandbox {
+            return Err(ConfigError::Invalid(
+                "buildPolicy.isolation.privilegedInSandbox and rootfulInSandbox are mutually exclusive"
+                    .into(),
+            ));
         }
         match self.storage.kind {
             StorageType::Registry if self.storage.registry.is_none() => Err(ConfigError::Invalid(
@@ -128,12 +140,29 @@ pub struct Isolation {
     /// guest (containerd `privileged_without_host_devices = true`, the kata-deploy default).
     #[serde(default)]
     pub privileged_in_sandbox: bool,
+    /// runtimeClass mode only: run rootful BuildKit as an *unprivileged* container in a pod
+    /// user namespace (`hostUsers: false`). For runtimes that virtualize procfs/sysfs and give
+    /// root in the pod its capabilities inside the user namespace, such as Sysbox
+    /// (`sysbox-runc`). Build pods then fit the Pod Security `baseline` level.
+    #[serde(default)]
+    pub rootful_in_sandbox: bool,
 }
 
 impl Isolation {
-    /// Whether builds run rootful BuildKit (privileged mode, or privileged inside a sandbox).
+    /// Whether builds run rootful BuildKit (privileged mode, or rootful inside a sandbox).
     pub fn rootful(&self) -> bool {
-        self.mode == IsolationMode::Privileged || self.privileged_in_sandbox
+        self.mode == IsolationMode::Privileged
+            || self.privileged_in_sandbox
+            || self.rootful_in_sandbox
+    }
+
+    /// The lowest Pod Security level build pods pass in their namespace.
+    pub fn pod_security_level(&self) -> &'static str {
+        if self.rootful_in_sandbox {
+            "baseline"
+        } else {
+            "privileged"
+        }
     }
 }
 
@@ -241,10 +270,10 @@ impl PushEndpoint {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BuildDefaults {
-    /// Rootless BuildKit image (userns, and runtimeClass without privilegedInSandbox).
+    /// Rootless BuildKit image (userns, and runtimeClass without privileged/rootfulInSandbox).
     #[serde(default = "default_buildkit_image")]
     pub image: String,
-    /// Rootful BuildKit image (privileged, and runtimeClass with privilegedInSandbox).
+    /// Rootful BuildKit image (privileged, and runtimeClass with privileged/rootfulInSandbox).
     #[serde(default = "default_buildkit_rootful_image")]
     pub rootful_image: String,
     #[serde(default)]
@@ -411,6 +440,34 @@ network: { clusterCIDRs: [10.244.0.0/16, 10.96.0.0/12] }
             "mode: userns, privilegedInSandbox: true",
         );
         assert!(Config::from_yaml(&bad).is_err());
+    }
+
+    #[test]
+    fn rootful_in_sandbox_needs_runtime_class_and_excludes_privileged_in_sandbox() {
+        let ok = HOMELAB.replace(
+            "runtimeClassName: kata",
+            "runtimeClassName: sysbox-runc, rootfulInSandbox: true",
+        );
+        let iso = Config::from_yaml(&ok).unwrap().build_policy.isolation;
+        assert!(iso.rootful());
+        assert_eq!(iso.pod_security_level(), "baseline");
+        let bad = HOMELAB.replace(
+            "mode: runtimeClass, runtimeClassName: kata",
+            "mode: userns, rootfulInSandbox: true",
+        );
+        let err = Config::from_yaml(&bad).unwrap_err().to_string();
+        assert!(err.contains("rootfulInSandbox"), "{err}");
+        let bad = HOMELAB.replace(
+            "mode: runtimeClass, runtimeClassName: kata",
+            "mode: privileged, allowPrivileged: true, rootfulInSandbox: true",
+        );
+        assert!(Config::from_yaml(&bad).is_err());
+        let both = HOMELAB.replace(
+            "runtimeClassName: kata",
+            "runtimeClassName: kata, privilegedInSandbox: true, rootfulInSandbox: true",
+        );
+        let err = Config::from_yaml(&both).unwrap_err().to_string();
+        assert!(err.contains("mutually exclusive"), "{err}");
     }
 
     #[test]

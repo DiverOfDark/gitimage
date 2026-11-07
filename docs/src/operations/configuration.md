@@ -6,6 +6,7 @@
 | `buildPolicy.isolation.runtimeClassName` | | RuntimeClass for `runtimeClass` mode |
 | `buildPolicy.isolation.allowPrivileged` | `false` | must be `true` for `privileged` |
 | `buildPolicy.isolation.privilegedInSandbox` | `false` | rootful BuildKit inside the sandbox (Kata) |
+| `buildPolicy.isolation.rootfulInSandbox` | `false` | rootful BuildKit, unprivileged, `hostUsers: false` (Sysbox); runtimeClass only, excludes `privilegedInSandbox` |
 | `buildPolicy.egress.allowInternet` | `true` | build pods may reach the internet |
 | `buildPolicy.egress.denyClusterCIDRs` | `true` | except `network.clusterCIDRs` |
 | `network.clusterCIDRs` | `[]` | pod and service CIDRs, IPv4 and IPv6 |

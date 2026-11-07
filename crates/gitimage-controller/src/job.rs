@@ -275,6 +275,17 @@ pub fn pod_overlay(cfg: &Config, pod: &mut PodSpec, buildkit: &mut Container) {
             pod.runtime_class_name = iso.runtime_class_name.clone();
             buildkit.security_context = Some(privileged);
         }
+        // Sysbox: root in a pod user namespace; the runtime grants it capabilities there and
+        // virtualizes procfs/sysfs, so rootful BuildKit runs without privileged or unconfined
+        // profiles (Pod Security baseline).
+        IsolationMode::RuntimeClass if iso.rootful_in_sandbox => {
+            pod.runtime_class_name = iso.runtime_class_name.clone();
+            pod.host_users = Some(false);
+            buildkit.security_context = Some(SecurityContext {
+                privileged: Some(false),
+                ..Default::default()
+            });
+        }
         IsolationMode::RuntimeClass => {
             pod.runtime_class_name = iso.runtime_class_name.clone();
             buildkit.security_context = Some(unconfined);
@@ -683,7 +694,7 @@ pub fn egress_policy(ns: &str, cfg: &Config, controller_ns: &str) -> NetworkPoli
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use gitimage_api::GitImageSpec;
 
@@ -722,7 +733,7 @@ build:
         gi
     }
 
-    fn params() -> BuildParams {
+    pub(crate) fn params() -> BuildParams {
         BuildParams {
             sha: "3f2c9e1aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
             attempt: 0,
@@ -804,6 +815,40 @@ build:
         assert!(mounts.contains(&"/var/lib/buildkit"));
         assert!(mounts.contains(&"/etc/buildkit/buildkitd.toml"));
         assert!(mounts.contains(&"/root/.docker"));
+    }
+
+    #[test]
+    fn sysbox_runs_rootful_buildkit_unprivileged_in_a_user_namespace() {
+        let mut cfg = config();
+        cfg.build_policy.isolation.runtime_class_name = Some("sysbox-runc".into());
+        cfg.build_policy.isolation.rootful_in_sandbox = true;
+        let job = build_job(&gitimage(), &cfg, &params());
+        insta::assert_yaml_snapshot!("sysbox_job", job);
+        let pod = job.spec.unwrap().template.spec.unwrap();
+        assert_eq!(pod.runtime_class_name.as_deref(), Some("sysbox-runc"));
+        assert_eq!(pod.host_users, Some(false));
+        let c = &pod.containers[0];
+        assert_eq!(c.image.as_deref(), Some("moby/buildkit:v0.34.2"));
+        let sc = c.security_context.as_ref().unwrap();
+        assert_eq!(sc.privileged, Some(false));
+        assert!(sc.seccomp_profile.is_none() && sc.app_armor_profile.is_none());
+        assert!(sc.capabilities.is_none() && sc.run_as_user.is_none());
+        assert!(
+            !c.env
+                .as_ref()
+                .unwrap()
+                .iter()
+                .any(|e| e.name == "BUILDKITD_FLAGS")
+        );
+        let mounts: Vec<&str> = c
+            .volume_mounts
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|m| m.mount_path.as_str())
+            .collect();
+        assert!(mounts.contains(&"/var/lib/buildkit"));
+        assert!(mounts.contains(&"/etc/buildkit/buildkitd.toml"));
     }
 
     #[test]

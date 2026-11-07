@@ -5,7 +5,7 @@
 | Controller in CrashLoopBackOff | `kubectl -n gitimage-system logs deploy/gitimage-controller --previous`: `IsolationUnavailable` names the failing mode; `kubectl -n gitimage-system logs job/gitimage-isolation-check-<hash>` |
 | Pod stays `SchedulingGated` | `kubectl get gi <name>`: no image yet; `kubectl describe pod`: `GitImageNotFound` or build progress Events |
 | `Failed` / `ResolveFailed` | wrong URL, ref, credentials or host key (`host key ... not in known_hosts`) |
-| `Failed` / `PodCreationFailed` | the namespace's Pod Security level: label it `pod-security.kubernetes.io/enforce=privileged` |
+| `Failed` / `PodCreationFailed` | the namespace's Pod Security level: label it `pod-security.kubernetes.io/enforce=privileged` (`baseline` with `rootfulInSandbox`) |
 | `Failed` / `BuildFailed` | `kubectl logs job/<name>-<sha7> -c buildkit` |
 | `Failed` / `PushFailed` | controller logs (storage errors), then the build log |
 | Annotated pod is created without a gate or digest | `kubectl get mutatingwebhookconfiguration gitimage -o yaml`: `caBundle` set? webhook pods ready? |

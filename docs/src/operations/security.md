@@ -9,8 +9,11 @@
 
 - **Pod Security admission.** Build pods are privileged in Kata (inside the VM) and privileged
   modes, and use unconfined seccomp/AppArmor in rootless modes, so every namespace with a
-  GitImage needs `pod-security.kubernetes.io/enforce: privileged`, and so does the release
-  namespace (gitimage-node uses hostNetwork). Without it the build fails within seconds with
+  GitImage needs `pod-security.kubernetes.io/enforce: privileged`. With Sysbox
+  (`rootfulInSandbox: true`) build pods are unprivileged, add no capabilities and set no
+  unconfined profiles, so `baseline` is enough; `restricted` rejects them (no
+  `allowPrivilegeEscalation: false`, `capabilities.drop: [ALL]` or `RuntimeDefault` seccomp). The release namespace needs `privileged` in every mode
+  (gitimage-node uses hostNetwork). With a stricter level the build fails within seconds with
   `PodCreationFailed` and the admission message.
 - **RBAC.** The controller gets `get/create/update/delete` on Secrets, never `list` or `watch`.
 - **Admission.** The mutating webhook is called only for pods carrying a
