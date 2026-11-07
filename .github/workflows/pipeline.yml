@@ -163,8 +163,6 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with: { pattern: dist-*, path: dist, merge-multiple: true }
-      - uses: docker/setup-qemu-action@v3
-        with: { image: "${{ vars.RUNS_ON && vars.DOCKERHUB_PREFIX || 'docker.io/' }}tonistiigi/binfmt:latest" }
       - uses: docker/setup-buildx-action@v3
         with: { driver-opts: "image=${{ vars.RUNS_ON && vars.DOCKERHUB_PREFIX || 'docker.io/' }}moby/buildkit:buildx-stable-1" }
       - uses: docker/login-action@v3
@@ -180,12 +178,12 @@ jobs:
           tags: ${{ env.IMAGE }}:${{ env.VERSION }},${{ env.IMAGE }}:latest
           sbom: true
           provenance: mode=max
+      # No QEMU: the image only COPYs prebuilt binaries (no RUN), and the arm64 binary already
+      # ran natively in its build job. amd64 exercises the same Dockerfile (--chmod) natively.
       - name: Smoke-test the pushed image
         run: |
-          for p in linux/amd64 linux/arm64; do
-            out=$(docker run --rm --platform "$p" "$IMAGE:$VERSION" version)
-            echo "$p: $out"; [ "$out" = "gitimage $VERSION" ]
-          done
+          out=$(docker run --rm --platform linux/amd64 "$IMAGE:$VERSION" version)
+          echo "$out"; [ "$out" = "gitimage $VERSION" ]
       - uses: sigstore/cosign-installer@v3
       - run: cosign sign --yes "$IMAGE@${{ steps.image.outputs.digest }}"
       - uses: azure/setup-helm@v4
