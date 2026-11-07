@@ -10,7 +10,15 @@ tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 curl -fsSL "$URL/gvisor.tar.bz2" -o "$tmp/gvisor.tar.bz2"
 curl -fsSL "$URL/gvisor.tar.bz2.sha512" -o "$tmp/gvisor.tar.bz2.sha512"
 (cd "$tmp" && sha512sum -c gvisor.tar.bz2.sha512 >/dev/null)
-mkdir "$tmp/x" && tar -xjf "$tmp/gvisor.tar.bz2" -C "$tmp/x"
+mkdir "$tmp/x"
+if command -v bzip2 >/dev/null; then
+  tar -xjf "$tmp/gvisor.tar.bz2" -C "$tmp/x"
+else
+  # No bzip2 on the runner image: decompress in a container, stream a plain tar back
+  # (stdin/stdout, so it also works with a remote or sidecar docker daemon).
+  docker run --rm -i docker.io/library/busybox:1.37 sh -c 'mkdir /x && tar -xjf - -C /x && tar -cf - -C /x .' \
+    < "$tmp/gvisor.tar.bz2" | tar -xf - -C "$tmp/x"
+fi
 [ -x "$tmp/x/runsc" ] && [ -x "$tmp/x/containerd-shim-runsc-v1" ] || { echo "unexpected gvisor.tar.bz2 layout"; exit 1; }
 for node in $(kind get nodes --name "$CLUSTER"); do
   # runsc finds its helpers in gvisor-bin/ next to itself.
