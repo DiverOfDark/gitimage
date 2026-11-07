@@ -356,3 +356,131 @@ async fn failed_build_is_reported_and_rebuild_retries() -> anyhow::Result<()> {
     let _ = sha;
     Ok(())
 }
+
+/// A private repo over ssh: the controller lists refs with russh, the clone container fetches
+/// with the same transport, and the host key is checked against known_hosts.
+#[tokio::test]
+#[ignore]
+async fn private_repo_over_ssh() -> anyhow::Result<()> {
+    let client = client().await?;
+    let ns = TestNs::new(&client, "e2e-ssh").await?;
+    let gitea = Gitea::default();
+    let repo = unique("ssh");
+    gitea.create_repo(&repo, true).await?;
+    let sha = gitea
+        .commit(&repo, "main", &[("Dockerfile", &dockerfile("ssh"))], "ssh")
+        .await?;
+    let (identity, known_hosts) = ssh_deploy_key(&repo).await?;
+    create_secret(
+        &ns,
+        "git",
+        &[("identity", &identity), ("known_hosts", &known_hosts)],
+    )
+    .await?;
+    create_gitimage(
+        &ns,
+        "app",
+        &format!(
+            "url: ssh://git@e2e-gitea:2222/{GITEA_USER}/{repo}.git\nsecretRef: {{ name: git }}"
+        ),
+    )
+    .await?;
+    wait_built(&ns, "app", &sha, BUILD).await?;
+
+    // A wrong host key must be refused, never trusted on first use.
+    create_secret(&ns, "git-bad", &[("identity", &identity), ("known_hosts", "[e2e-gitea]:2222 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl")]).await?;
+    create_gitimage(
+        &ns,
+        "bad",
+        &format!(
+            "url: ssh://git@e2e-gitea:2222/{GITEA_USER}/{repo}.git\nsecretRef: {{ name: git-bad }}"
+        ),
+    )
+    .await?;
+    let api = ns.api::<GitImage>();
+    let msg = wait_for(
+        "ResolveFailed for a wrong host key",
+        Duration::from_secs(60),
+        || async {
+            let gi = api.get("bad").await?;
+            Ok(gi
+                .status
+                .unwrap_or_default()
+                .condition("Failed")
+                .filter(|c| c.reason == "ResolveFailed")
+                .map(|c| c.message.clone()))
+        },
+    )
+    .await?;
+    assert!(msg.to_lowercase().contains("host key"), "{msg}");
+    Ok(())
+}
+
+/// F6: GC keeps the 5 newest builds and deletes older manifests and tags.
+#[tokio::test]
+#[ignore]
+async fn gc_keeps_five_newest_builds() -> anyhow::Result<()> {
+    let client = client().await?;
+    let ns = TestNs::new(&client, "e2e-gc").await?;
+    let gitea = Gitea::default();
+    let repo = unique("gc");
+    gitea.create_repo(&repo, false).await?;
+    let mut shas = Vec::new();
+    for i in 0..7 {
+        let sha = gitea
+            .commit(
+                &repo,
+                "main",
+                &[("Dockerfile", &dockerfile(&format!("gc{i}")))],
+                "gc",
+            )
+            .await?;
+        if i == 0 {
+            create_gitimage(
+                &ns,
+                "app",
+                &format!("url: {}\ninterval: 3s", Gitea::https_url(&repo)),
+            )
+            .await?;
+        }
+        wait_built(&ns, "app", &sha, BUILD).await?;
+        shas.push(sha);
+    }
+    let gi = ns.api::<GitImage>().get("app").await?;
+    let image = gi.status.and_then(|s| s.image).unwrap();
+    let ns_name = ns.name.clone();
+    if image.starts_with("localhost:") {
+        // s3 mode: ask gitimage-node on a kind node.
+        let tags = wait_for(
+            "GC to drop the 2 oldest tags",
+            Duration::from_secs(120),
+            || {
+                let ns_name = ns_name.clone();
+                let oldest = shas[..2].to_vec();
+                async move {
+                    let out = std::process::Command::new("docker")
+                        .args([
+                            "exec",
+                            "gitimage-e2e-worker",
+                            "curl",
+                            "-s",
+                            &format!("http://localhost:25050/v2/{ns_name}/app/tags/list?n=100"),
+                        ])
+                        .output()?;
+                    let body = String::from_utf8_lossy(&out.stdout).to_string();
+                    Ok((!oldest.iter().any(|s| body.contains(s.as_str()))
+                        && body.contains("buildcache"))
+                    .then_some(body))
+                }
+            },
+        )
+        .await?;
+        for sha in &shas[2..] {
+            assert!(
+                tags.contains(sha.as_str()),
+                "kept tag {sha} missing: {tags}"
+            );
+        }
+    }
+    Ok(())
+}

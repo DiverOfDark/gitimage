@@ -180,7 +180,12 @@ pub async fn collect(ctx: &Ctx, gi: &GitImage, pods: &[Pod]) -> anyhow::Result<u
 
 /// Runs a GC pass over every GitImage every hour, while this replica leads.
 pub async fn run(ctx: Arc<Ctx>) {
-    let mut tick = tokio::time::interval(Duration::from_secs(3600));
+    // GITIMAGE_GC_INTERVAL (e.g. `20s`) exists for the e2e suite; production uses 1 h.
+    let every = std::env::var("GITIMAGE_GC_INTERVAL")
+        .ok()
+        .and_then(|v| humantime::parse_duration(&v).ok())
+        .unwrap_or(Duration::from_secs(3600));
+    let mut tick = tokio::time::interval(every);
     loop {
         tick.tick().await;
         let pods: Api<Pod> = Api::all(ctx.client.clone());

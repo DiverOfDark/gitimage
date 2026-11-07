@@ -28,7 +28,11 @@ spec:
           args:
             - controller
             {{- include "gitimage.logArgs" . | nindent 12 }}
-          env: {{- include "gitimage.podEnv" . | nindent 12 }}
+          env:
+            {{- include "gitimage.podEnv" . | nindent 12 }}
+            {{- with .Values.controller.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           ports:
             - { name: push, containerPort: 5000 }
             - { name: hooks, containerPort: 8080 }

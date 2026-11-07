@@ -435,3 +435,40 @@ pub async fn registry_layers(repo: &str, reference: &str) -> anyhow::Result<Vec<
 pub fn gitimage_name(gi: &GitImage) -> String {
     gi.name_any()
 }
+
+/// An ed25519 deploy key added to `repo` (read-only) and the Gitea ssh host key as a
+/// known_hosts line for `[e2e-gitea]:2222`. Uses the host's ssh-keygen and ssh-keyscan.
+pub async fn ssh_deploy_key(repo: &str) -> anyhow::Result<(String, String)> {
+    let dir = std::env::temp_dir().join(unique("e2e-key"));
+    std::fs::create_dir_all(&dir)?;
+    let key = dir.join("id");
+    let st = std::process::Command::new("ssh-keygen")
+        .args(["-q", "-t", "ed25519", "-N", "", "-C", "e2e", "-f"])
+        .arg(&key)
+        .status()?;
+    anyhow::ensure!(st.success(), "ssh-keygen failed");
+    let private = std::fs::read_to_string(&key)?;
+    let public = std::fs::read_to_string(key.with_extension("pub"))?;
+    std::fs::remove_dir_all(&dir).ok();
+    let http = reqwest::Client::new();
+    let r = http
+        .post(format!("{GITEA}/api/v1/repos/{GITEA_USER}/{repo}/keys"))
+        .basic_auth(GITEA_USER, Some(GITEA_PASSWORD))
+        .json(&json!({ "title": "gitimage", "key": public.trim(), "read_only": true }))
+        .send()
+        .await?;
+    anyhow::ensure!(
+        r.status().is_success(),
+        "add deploy key: {}",
+        r.text().await?
+    );
+    let scan = std::process::Command::new("ssh-keyscan")
+        .args(["-t", "ed25519", "-p", "2222", "127.0.0.1"])
+        .output()?;
+    let line = String::from_utf8(scan.stdout)?
+        .lines()
+        .find(|l| l.starts_with("[127.0.0.1]:2222"))
+        .context("ssh-keyscan returned no ed25519 key")?
+        .replacen("[127.0.0.1]:2222", "[e2e-gitea]:2222", 1);
+    Ok((private, line))
+}
