@@ -1301,7 +1301,14 @@ dependencies = [
 name = "gitimage-node"
 version = "0.1.0"
 dependencies = [
- "gitimage-api",
+ "anyhow",
+ "async-trait",
+ "axum",
+ "gitimage-oci",
+ "object_store",
+ "reqwest",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -1316,7 +1323,6 @@ dependencies = [
  "gitimage-api",
  "hex",
  "hmac 0.13.0",
- "http-body-util",
  "jsonwebtoken",
  "object_store",
  "reqwest",
@@ -1325,9 +1331,7 @@ dependencies = [
  "sha2 0.11.1",
  "thiserror",
  "tokio",
- "tokio-util",
  "tower",
- "tower-http 0.7.1",
  "tracing",
  "tracing-subscriber",
  "uuid",
@@ -4528,7 +4532,6 @@ dependencies = [
  "bytes",
  "http",
  "http-body",
- "http-body-util",
  "mime",
  "percent-encoding",
  "pin-project-lite",

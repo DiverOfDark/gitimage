@@ -517,3 +517,25 @@ async fn uploads_are_forwarded_to_their_owner() {
     let v: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(v["errors"][0]["code"], "BLOB_UPLOAD_UNKNOWN");
 }
+
+#[tokio::test]
+async fn large_chunks_stream_into_s3_storage() {
+    let storage: DynStorage = Arc::new(crate::S3Storage::from_store(Arc::new(
+        object_store::memory::InMemory::new(),
+    )));
+    let router = push_router(state(storage.clone(), "10.0.0.1", 5000));
+    let data: Vec<u8> = (0..(20 * 1024 * 1024 + 7))
+        .map(|i: usize| (i % 249) as u8)
+        .collect();
+    let d = chunked_push(&router, "ns/big", &data).await;
+    let resp = call(
+        &router,
+        Method::GET,
+        &format!("/v2/ns/big/blobs/{d}"),
+        vec![],
+        &[("range", "bytes=9000000-")],
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(body(resp).await, data[9_000_000..]);
+}
