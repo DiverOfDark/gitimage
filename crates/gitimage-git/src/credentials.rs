@@ -41,6 +41,8 @@ pub enum CredentialsError {
     NotUtf8(&'static str),
     #[error("ssh secret needs known_hosts: GitImage never trusts an unknown host key")]
     NoKnownHosts,
+    #[error("read {0}: {1}")]
+    Read(String, String),
 }
 
 impl Credentials {
@@ -67,6 +69,29 @@ impl Credentials {
             }),
             (None, None) => Err(CredentialsError::Unrecognized),
         }
+    }
+}
+
+impl Credentials {
+    /// Builds credentials from a directory where the Secret is mounted (one file per key:
+    /// `identity`, `known_hosts`, `username`, `password`). Other files are ignored.
+    pub fn from_dir(dir: &std::path::Path) -> Result<Self, CredentialsError> {
+        let mut data = BTreeMap::new();
+        for key in ["identity", "known_hosts", "username", "password"] {
+            match std::fs::read(dir.join(key)) {
+                Ok(v) => {
+                    data.insert(key.to_owned(), v);
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => {
+                    return Err(CredentialsError::Read(
+                        dir.join(key).display().to_string(),
+                        e.to_string(),
+                    ));
+                }
+            }
+        }
+        Self::from_secret_data(&data)
     }
 }
 
@@ -97,6 +122,26 @@ mod tests {
     fn ssh_needs_known_hosts() {
         let c = Credentials::from_secret_data(&data(&[("identity", "key")]));
         assert_eq!(c, Err(CredentialsError::NoKnownHosts));
+    }
+
+    #[test]
+    fn from_dir() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("identity"), "KEY").unwrap();
+        std::fs::write(d.path().join("known_hosts"), "host key").unwrap();
+        std::fs::write(d.path().join("ca.crt"), "ignored").unwrap();
+        assert_eq!(
+            Credentials::from_dir(d.path()),
+            Ok(Credentials::Ssh {
+                identity: "KEY".into(),
+                known_hosts: "host key".into()
+            })
+        );
+        let e = tempfile::tempdir().unwrap();
+        assert_eq!(
+            Credentials::from_dir(e.path()),
+            Err(CredentialsError::Unrecognized)
+        );
     }
 
     #[test]

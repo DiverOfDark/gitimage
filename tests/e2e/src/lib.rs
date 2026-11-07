@@ -77,7 +77,10 @@ impl TestNs {
         let api: Api<Namespace> = Api::all(client.clone());
         let ns: Namespace = serde_json::from_value(json!({ "metadata": { "name": name } }))?;
         api.create(&PostParams::default(), &ns).await?;
-        Ok(Self { name, client: client.clone() })
+        Ok(Self {
+            name,
+            client: client.clone(),
+        })
     }
 
     pub fn api<K>(&self) -> Api<K>
@@ -96,7 +99,9 @@ impl Drop for TestNs {
         let client = self.client.clone();
         let name = self.name.clone();
         let _ = std::thread::spawn(move || {
-            let rt = tokio::runtime::Builder::new_current_thread().enable_all().build();
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build();
             if let Ok(rt) = rt {
                 rt.block_on(async {
                     let api: Api<Namespace> = Api::all(client);
@@ -115,7 +120,9 @@ pub struct Gitea {
 
 impl Default for Gitea {
     fn default() -> Self {
-        Self { http: reqwest::Client::new() }
+        Self {
+            http: reqwest::Client::new(),
+        }
     }
 }
 
@@ -137,7 +144,13 @@ impl Gitea {
     }
 
     /// Commits `files` (path -> content) to `branch`; returns the commit sha.
-    pub async fn commit(&self, repo: &str, branch: &str, files: &[(&str, &str)], message: &str) -> anyhow::Result<String> {
+    pub async fn commit(
+        &self,
+        repo: &str,
+        branch: &str,
+        files: &[(&str, &str)],
+        message: &str,
+    ) -> anyhow::Result<String> {
         let existing = self.tree_paths(repo, branch).await.unwrap_or_default();
         let ops: Vec<serde_json::Value> = files
             .iter()
@@ -160,7 +173,10 @@ impl Gitea {
             body["branch"] = json!(branch);
         }
         let r = self
-            .auth(self.http.post(format!("{GITEA}/api/v1/repos/{GITEA_USER}/{repo}/contents")))
+            .auth(
+                self.http
+                    .post(format!("{GITEA}/api/v1/repos/{GITEA_USER}/{repo}/contents")),
+            )
             .json(&body)
             .send()
             .await?;
@@ -169,12 +185,17 @@ impl Gitea {
         if !status.is_success() {
             bail!("commit to {repo}: {status} {v}");
         }
-        v["commit"]["sha"].as_str().map(str::to_string).context("no commit sha in response")
+        v["commit"]["sha"]
+            .as_str()
+            .map(str::to_string)
+            .context("no commit sha in response")
     }
 
     async fn tree_paths(&self, repo: &str, branch: &str) -> anyhow::Result<Vec<String>> {
         let r = self
-            .auth(self.http.get(format!("{GITEA}/api/v1/repos/{GITEA_USER}/{repo}/git/trees/{branch}?recursive=true")))
+            .auth(self.http.get(format!(
+                "{GITEA}/api/v1/repos/{GITEA_USER}/{repo}/git/trees/{branch}?recursive=true"
+            )))
             .send()
             .await?;
         if !r.status().is_success() {
@@ -186,7 +207,13 @@ impl Gitea {
             .map(|a| {
                 a.iter()
                     .filter(|e| e["type"] == "blob")
-                    .map(|e| format!("{}\u{0}{}", e["path"].as_str().unwrap_or(""), e["sha"].as_str().unwrap_or("")))
+                    .map(|e| {
+                        format!(
+                            "{}\u{0}{}",
+                            e["path"].as_str().unwrap_or(""),
+                            e["sha"].as_str().unwrap_or("")
+                        )
+                    })
                     .collect()
             })
             .unwrap_or_default())
@@ -194,7 +221,10 @@ impl Gitea {
 
     pub async fn tag(&self, repo: &str, tag: &str, target: &str) -> anyhow::Result<()> {
         let r = self
-            .auth(self.http.post(format!("{GITEA}/api/v1/repos/{GITEA_USER}/{repo}/tags")))
+            .auth(
+                self.http
+                    .post(format!("{GITEA}/api/v1/repos/{GITEA_USER}/{repo}/tags")),
+            )
             .json(&json!({ "tag_name": tag, "target": target, "message": tag }))
             .send()
             .await?;
@@ -213,7 +243,11 @@ impl Gitea {
 fn existing_sha(existing: &[String], path: &str) -> String {
     existing
         .iter()
-        .find_map(|e| e.split_once('\u{0}').filter(|(p, _)| *p == path).map(|(_, s)| s.to_string()))
+        .find_map(|e| {
+            e.split_once('\u{0}')
+                .filter(|(p, _)| *p == path)
+                .map(|(_, s)| s.to_string())
+        })
         .unwrap_or_default()
 }
 
@@ -222,7 +256,8 @@ trait ContainsPath {
 }
 impl ContainsPath for Vec<String> {
     fn contains(&self, path: &String) -> bool {
-        self.iter().any(|e| e.split_once('\u{0}').is_some_and(|(p, _)| p == path))
+        self.iter()
+            .any(|e| e.split_once('\u{0}').is_some_and(|(p, _)| p == path))
     }
 }
 
@@ -231,11 +266,19 @@ pub async fn create_gitimage(ns: &TestNs, name: &str, spec_yaml: &str) -> anyhow
     let spec: GitImageSpec = serde_yaml::from_str(spec_yaml)?;
     let mut gi = GitImage::new(name, spec);
     gi.metadata.namespace = Some(ns.name.clone());
-    Ok(ns.api::<GitImage>().create(&PostParams::default(), &gi).await?)
+    Ok(ns
+        .api::<GitImage>()
+        .create(&PostParams::default(), &gi)
+        .await?)
 }
 
 /// Waits until the GitImage's current revision is `sha` and returns its image ref.
-pub async fn wait_built(ns: &TestNs, name: &str, sha: &str, timeout: Duration) -> anyhow::Result<GitImage> {
+pub async fn wait_built(
+    ns: &TestNs,
+    name: &str,
+    sha: &str,
+    timeout: Duration,
+) -> anyhow::Result<GitImage> {
     let api = ns.api::<GitImage>();
     wait_for(&format!("GitImage {name} built at {sha}"), timeout, || {
         let api = api.clone();
@@ -252,7 +295,11 @@ pub async fn wait_built(ns: &TestNs, name: &str, sha: &str, timeout: Duration) -
 }
 
 /// A Deployment whose container `web` runs GitImage `gitimage`.
-pub async fn create_deployment(ns: &TestNs, name: &str, gitimage: &str) -> anyhow::Result<Deployment> {
+pub async fn create_deployment(
+    ns: &TestNs,
+    name: &str,
+    gitimage: &str,
+) -> anyhow::Result<Deployment> {
     let d: Deployment = serde_json::from_value(json!({
         "metadata": { "name": name },
         "spec": {
@@ -270,18 +317,32 @@ pub async fn create_deployment(ns: &TestNs, name: &str, gitimage: &str) -> anyho
             }
         }
     }))?;
-    Ok(ns.api::<Deployment>().create(&PostParams::default(), &d).await?)
+    Ok(ns
+        .api::<Deployment>()
+        .create(&PostParams::default(), &d)
+        .await?)
 }
 
 /// Running pods of a Deployment with their `web` image.
 pub async fn running_images(ns: &TestNs, app: &str) -> anyhow::Result<Vec<String>> {
-    let pods = ns.api::<Pod>().list(&ListParams::default().labels(&format!("app={app}"))).await?;
+    let pods = ns
+        .api::<Pod>()
+        .list(&ListParams::default().labels(&format!("app={app}")))
+        .await?;
     Ok(pods
         .items
         .iter()
         .filter(|p| p.metadata.deletion_timestamp.is_none())
         .filter(|p| p.status.as_ref().and_then(|s| s.phase.as_deref()) == Some("Running"))
-        .filter_map(|p| p.spec.as_ref()?.containers.iter().find(|c| c.name == "web")?.image.clone())
+        .filter_map(|p| {
+            p.spec
+                .as_ref()?
+                .containers
+                .iter()
+                .find(|c| c.name == "web")?
+                .image
+                .clone()
+        })
         .collect())
 }
 
@@ -295,11 +356,20 @@ pub async fn build_jobs(ns: &TestNs, gitimage: &str) -> anyhow::Result<Vec<Job>>
 
 pub async fn create_secret(ns: &TestNs, name: &str, data: &[(&str, &str)]) -> anyhow::Result<()> {
     let s = Secret {
-        metadata: kube::core::ObjectMeta { name: Some(name.into()), ..Default::default() },
-        string_data: Some(data.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect::<BTreeMap<_, _>>()),
+        metadata: kube::core::ObjectMeta {
+            name: Some(name.into()),
+            ..Default::default()
+        },
+        string_data: Some(
+            data.iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect::<BTreeMap<_, _>>(),
+        ),
         ..Default::default()
     };
-    ns.api::<Secret>().create(&PostParams::default(), &s).await?;
+    ns.api::<Secret>()
+        .create(&PostParams::default(), &s)
+        .await?;
     Ok(())
 }
 
@@ -314,14 +384,18 @@ pub async fn run_pod(ns: &TestNs, name: &str, script: &str) -> anyhow::Result<St
     }))?;
     let api = ns.api::<Pod>();
     api.create(&PostParams::default(), &p).await?;
-    wait_for(&format!("pod {name} finished"), Duration::from_secs(120), || {
-        let api = api.clone();
-        async move {
-            let p = api.get(name).await?;
-            let phase = p.status.and_then(|s| s.phase).unwrap_or_default();
-            Ok((phase == "Succeeded" || phase == "Failed").then_some(()))
-        }
-    })
+    wait_for(
+        &format!("pod {name} finished"),
+        Duration::from_secs(120),
+        || {
+            let api = api.clone();
+            async move {
+                let p = api.get(name).await?;
+                let phase = p.status.and_then(|s| s.phase).unwrap_or_default();
+                Ok((phase == "Succeeded" || phase == "Failed").then_some(()))
+            }
+        },
+    )
     .await?;
     Ok(api.logs(name, &Default::default()).await?)
 }
@@ -340,7 +414,10 @@ pub async fn registry_layers(repo: &str, reference: &str) -> anyhow::Result<Vec<
         .json()
         .await?;
     if let Some(first) = manifest["manifests"].as_array().and_then(|m| m.first()) {
-        let d = first["digest"].as_str().context("index without digest")?.to_string();
+        let d = first["digest"]
+            .as_str()
+            .context("index without digest")?
+            .to_string();
         manifest = http
             .get(format!("{REGISTRY}/v2/{repo}/manifests/{d}"))
             .header("Accept", accept)
@@ -353,7 +430,13 @@ pub async fn registry_layers(repo: &str, reference: &str) -> anyhow::Result<Vec<
     let mut out = Vec::new();
     for layer in manifest["layers"].as_array().cloned().unwrap_or_default() {
         let d = layer["digest"].as_str().context("layer digest")?;
-        let bytes = http.get(format!("{REGISTRY}/v2/{repo}/blobs/{d}")).send().await?.error_for_status()?.bytes().await?;
+        let bytes = http
+            .get(format!("{REGISTRY}/v2/{repo}/blobs/{d}"))
+            .send()
+            .await?
+            .error_for_status()?
+            .bytes()
+            .await?;
         let mut dec = flate2::read::GzDecoder::new(&bytes[..]);
         let mut buf = Vec::new();
         use std::io::Read as _;

@@ -1,10 +1,18 @@
 //! Git access for GitImage: ref resolution (pure), credentials from Flux-format Secrets,
 //! and the `GitClient` trait with its gix implementation. No `git` or `ssh` subprocess.
 
+mod cli;
 mod credentials;
+#[cfg(test)]
+mod gitea_it;
 mod gix_client;
+mod host_api;
 mod refs;
+mod ssh;
+#[cfg(test)]
+mod sshd_it;
 
+pub use cli::{CloneArgs, run_clone_cli};
 pub use credentials::{Credentials, CredentialsError};
 pub use gix_client::GixClient;
 

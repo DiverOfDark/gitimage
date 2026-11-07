@@ -51,7 +51,7 @@ enum Command {
     /// Read-only OCI server on 127.0.0.1 for s3 storage mode.
     Node(NodeArgs),
     /// Init container of a build Job: fetch one commit and check it out.
-    Clone,
+    Clone(gitimage_git::CloneArgs),
     /// Print the CRD YAML (or write it to --out).
     Crdgen {
         #[arg(long)]
@@ -233,7 +233,10 @@ async fn main() -> anyhow::Result<()> {
             )
             .await
         }
-        Command::Clone => anyhow::bail!("gitimage clone: not wired yet"), // MERGE-TODO: gitimage_git::run_clone_cli
+        Command::Clone(a) => {
+            let code = gitimage_git::run_clone_cli(a).await?;
+            std::process::exit(code)
+        }
         Command::Crdgen { .. } | Command::Version | Command::CheckConfig { .. } => unreachable!(),
     }
 }
