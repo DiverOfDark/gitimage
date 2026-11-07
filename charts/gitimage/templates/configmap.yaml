@@ -59,6 +59,7 @@ data:
       labels: {{ toJson .Values.build.labels }}
       extraOpts: {{ toJson .Values.build.extraOpts }}
       defaultResources: {{ toJson .Values.build.defaultResources }}
+      buildkitdConfig: {{ .Values.build.buildkitdConfig | toJson }}
     network:
       clusterCIDRs: {{ toJson .Values.network.clusterCIDRs }}
     node:

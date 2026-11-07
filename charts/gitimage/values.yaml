@@ -56,6 +56,10 @@ build:
   cache: max
   labels: {}
   extraOpts: {}
+  # Appended to the build pods' buildkitd.toml: registry mirrors, private/plain-HTTP registries.
+  buildkitdConfig: ""
+    # [registry."docker.io"]
+    #   mirrors = ["mirror.example.com"]
   defaultResources: {}
     # requests: { cpu: "1", memory: 2Gi }
     # limits: { memory: 4Gi }

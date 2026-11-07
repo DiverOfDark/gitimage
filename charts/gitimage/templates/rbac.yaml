@@ -53,7 +53,8 @@ rules:
     verbs: [get, list, watch, patch]
   - apiGroups: ["", events.k8s.io]
     resources: [events]
-    verbs: [create, patch]
+    # list: build Jobs that cannot create pods (FailedCreate, e.g. Pod Security) fail fast.
+    verbs: [create, patch, get, list]
   - apiGroups: [node.k8s.io]
     resources: [runtimeclasses]
     verbs: [get]

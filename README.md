@@ -109,7 +109,7 @@ cargo test --workspace                       # unit + storage + router + OCI tes
 ./hack/check-chart-config.sh                 # chart renders a config the controller accepts
 ./hack/oci-conformance.sh                    # OCI distribution-spec conformance (74/74)
 ./hack/e2e/run.sh s3 gvisor                  # kind e2e: registry|s3 x privileged|gvisor|kata-qemu
-cargo run -p gitimage -- crdgen --out charts/gitimage/crds/gitimage.yaml   # after API changes
+cargo run -p gitimage -- crdgen --out charts/gitimage/templates/crd.yaml   # after API changes
 ```
 
 The e2e environment uses its own kubeconfig (`hack/.kubeconfig`); it never touches yours.

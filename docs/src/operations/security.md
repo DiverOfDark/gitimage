@@ -7,6 +7,11 @@
 | Storage credentials | the controller (and read-only ones in gitimage-node); never build pods |
 | Push tokens | one per build Job, HS256, scoped to `<namespace>/<gitimage>`, valid only while that Job runs |
 
+- **Pod Security admission.** Build pods are privileged in Kata (inside the VM) and privileged
+  modes, and use unconfined seccomp/AppArmor in rootless modes, so every namespace with a
+  GitImage needs `pod-security.kubernetes.io/enforce: privileged`, and so does the release
+  namespace (gitimage-node uses hostNetwork). Without it the build fails within seconds with
+  `PodCreationFailed` and the admission message.
 - **RBAC.** The controller gets `get/create/update/delete` on Secrets, never `list` or `watch`.
 - **Admission.** The mutating webhook is called only for pods carrying a
   `gitimage.dev/image.*` annotation (CEL `matchConditions`), so a webhook outage blocks only

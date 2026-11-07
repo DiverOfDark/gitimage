@@ -329,6 +329,7 @@ spec:
             context_tree: None,
             source_revision: None,
             reason: None,
+            message: None,
             finished_at: "2026-11-07T00:00:00Z".into(),
         }
     }

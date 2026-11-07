@@ -48,6 +48,12 @@ impl From<anyhow::Error> for Error {
 
 /// Requeue after an error.
 pub fn error_policy(gi: Arc<GitImage>, err: &Error, ctx: Arc<Ctx>) -> Action {
+    if let Error::Kube(kube::Error::Api(e)) = err
+        && e.message.contains("being terminated")
+    {
+        // The namespace is being deleted; nothing to do.
+        return Action::await_change();
+    }
     tracing::warn!(namespace = gi.namespace().unwrap_or_default(), name = gi.name_any(), error = %err, "reconcile failed");
     ctx.metrics.error("gitimage");
     Action::requeue(Duration::from_secs(30))
@@ -203,6 +209,7 @@ fn record(revision: &str, outcome: BuildOutcome) -> BuildRecord {
         context_tree: None,
         source_revision: None,
         reason: None,
+        message: None,
         finished_at: now_rfc3339(),
     }
 }
@@ -245,6 +252,44 @@ async fn job_pod(ctx: &Ctx, ns: &str, job: &str) -> Option<Pod> {
     let mut pods = api.list(&lp).await.ok()?.items;
     pods.sort_by_key(|p| p.metadata.creation_timestamp.clone());
     pods.pop()
+}
+
+/// If a running Job has no pod and its controller reported `FailedCreate`, the reason.
+async fn pod_creation_failure(ctx: &Ctx, ns: &str, job: &Job) -> Option<String> {
+    let age = job
+        .metadata
+        .creation_timestamp
+        .as_ref()
+        .map(|t| chrono::Utc::now().timestamp() - t.0.as_second())
+        .unwrap_or(0);
+    if age < 5 || job_pod(ctx, ns, &job.name_any()).await.is_some() {
+        return None;
+    }
+    let events: Api<k8s_openapi::api::core::v1::Event> = Api::namespaced(ctx.client.clone(), ns);
+    let lp = ListParams::default().fields(&format!(
+        "involvedObject.kind=Job,involvedObject.name={},reason=FailedCreate",
+        job.name_any()
+    ));
+    let list = match events.list(&lp).await {
+        Ok(l) => l,
+        Err(e) => {
+            tracing::warn!(job = job.name_any(), error = %e, "cannot list events for a pod-less build Job");
+            return None;
+        }
+    };
+    let uid = job.metadata.uid.as_deref();
+    list.items
+        .into_iter()
+        .filter(|e| e.involved_object.uid.as_deref() == uid)
+        .filter_map(|e| e.message)
+        .next_back()
+        .map(|m| {
+            if m.contains("PodSecurity") {
+                format!("{m}. Build pods need the namespace label pod-security.kubernetes.io/enforce=privileged")
+            } else {
+                m
+            }
+        })
 }
 
 /// Starts a task that follows the BuildKit log of `job` and reports progress.
@@ -513,6 +558,9 @@ async fn inspect_finished(
 }
 
 pub async fn reconcile(gi: Arc<GitImage>, ctx: Arc<Ctx>) -> Result<Action, Error> {
+    if gi.metadata.deletion_timestamp.is_some() {
+        return Ok(Action::await_change());
+    }
     let ns = gi.namespace().unwrap_or_default();
     let name = gi.name_any();
     let api: Api<GitImage> = Api::namespaced(ctx.client.clone(), &ns);
@@ -661,11 +709,47 @@ pub async fn reconcile(gi: Arc<GitImage>, ctx: Arc<Ctx>) -> Result<Action, Error
             .collect();
         sha_jobs.sort_by_key(|j| job_attempt(j));
         match sha_jobs.last() {
-            Some(j) if !job_finished(j) => {
-                follow_job(&ctx, &gi, j);
-                building = true;
-                set_building(&ctx, &mut status, j, generation, &sha);
-            }
+            Some(j) if !job_finished(j) => match pod_creation_failure(&ctx, &ns, j).await {
+                // The Job cannot create its pod (Pod Security, quota, ...): fail now instead
+                // of waiting for activeDeadlineSeconds.
+                Some(msg) => {
+                    let dp = DeleteParams {
+                        propagation_policy: Some(PropagationPolicy::Foreground),
+                        ..Default::default()
+                    };
+                    let _ = jobs_api.delete(&j.name_any(), &dp).await;
+                    ctx.metrics.build("Failed");
+                    publish(
+                        &ctx,
+                        &gi,
+                        EventType::Warning,
+                        fail::POD_CREATION_FAILED,
+                        msg.clone(),
+                    )
+                    .await;
+                    push_record(
+                        &mut status,
+                        BuildRecord {
+                            reason: Some(fail::POD_CREATION_FAILED.into()),
+                            message: Some(truncate(&msg, 512)),
+                            ..record(&sha, BuildOutcome::Failed)
+                        },
+                    );
+                    set_condition(
+                        &mut status.conditions,
+                        cond::FAILED,
+                        true,
+                        fail::POD_CREATION_FAILED,
+                        &msg,
+                        generation,
+                    );
+                }
+                None => {
+                    follow_job(&ctx, &gi, j);
+                    building = true;
+                    set_building(&ctx, &mut status, j, generation, &sha);
+                }
+            },
             // A rebuild request: the finished Job stays until its TTL, so start a new attempt.
             Some(j) if rebuild_requested => {
                 let skip = j.annotations().get("gitimage.dev/skip-if-tree").cloned();
@@ -685,7 +769,7 @@ pub async fn reconcile(gi: Arc<GitImage>, ctx: Arc<Ctx>) -> Result<Action, Error
                 }
             }
             Some(j) => match inspect_finished(&ctx, &gi, &status, j, &sha).await {
-                Finished::Record(rec) => {
+                Finished::Record(mut rec) => {
                     let outcome = format!("{:?}", rec.outcome);
                     ctx.metrics.build(&outcome);
                     let (ev_type, reason, note) = match rec.outcome {
@@ -724,6 +808,9 @@ pub async fn reconcile(gi: Arc<GitImage>, ctx: Arc<Ctx>) -> Result<Action, Error
                                         .and_then(|p| p.error.clone())
                                 })
                                 .unwrap_or_default();
+                            if !detail.is_empty() {
+                                rec.message = Some(truncate(&detail, 512));
+                            }
                             (
                                 EventType::Warning,
                                 "BuildFailed",
@@ -841,7 +928,7 @@ pub async fn reconcile(gi: Arc<GitImage>, ctx: Arc<Ctx>) -> Result<Action, Error
             generation,
         );
     }
-    match status.record(&sha) {
+    match status.record(&sha).cloned() {
         Some(r) if r.outcome == BuildOutcome::Failed => {
             let reason = r
                 .reason
@@ -852,11 +939,18 @@ pub async fn reconcile(gi: Arc<GitImage>, ctx: Arc<Ctx>) -> Result<Action, Error
                 cond::FAILED,
                 true,
                 &reason,
-                &format!(
-                    "build of {} failed; push a new commit or change {}",
-                    short(&sha),
-                    keys::REBUILD_ANNOTATION
-                ),
+                &match &r.message {
+                    Some(m) => format!(
+                        "build of {} failed: {m}; push a new commit or change {}",
+                        short(&sha),
+                        keys::REBUILD_ANNOTATION
+                    ),
+                    None => format!(
+                        "build of {} failed; push a new commit or change {}",
+                        short(&sha),
+                        keys::REBUILD_ANNOTATION
+                    ),
+                },
                 generation,
             );
         }
@@ -903,7 +997,10 @@ pub async fn reconcile(gi: Arc<GitImage>, ctx: Arc<Ctx>) -> Result<Action, Error
     if status.revision.is_some() && status.revision != old.revision {
         roller::roll(&ctx, &gi, status.revision.as_deref().unwrap_or_default()).await;
     }
-    let requeue = if resolved.movable {
+    let requeue = if building {
+        // A Job without a pod produces no events we watch; look again soon.
+        Duration::from_secs(15)
+    } else if resolved.movable {
         interval
     } else {
         interval.max(Duration::from_secs(600))
@@ -938,6 +1035,14 @@ fn set_building(
         &format!("{}: {step}", short(sha)),
         generation,
     );
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        format!("{}…", s.chars().take(max - 1).collect::<String>())
+    }
 }
 
 fn short(sha: &str) -> &str {

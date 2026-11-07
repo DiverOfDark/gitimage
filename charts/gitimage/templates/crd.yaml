@@ -3,6 +3,8 @@
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
+  annotations:
+    helm.sh/resource-policy: keep
   name: gitimages.gitimage.dev
 spec:
   group: gitimage.dev
@@ -168,6 +170,12 @@ spec:
                       type: string
                     finishedAt:
                       description: RFC 3339.
+                      type: string
+                    message:
+                      description: |-
+                        Human-readable detail for `Failed` records (admission error, BuildKit error), at most
+                        512 characters.
+                      nullable: true
                       type: string
                     outcome:
                       enum:

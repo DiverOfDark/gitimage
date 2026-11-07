@@ -24,6 +24,12 @@ run_once() { # name, args...
   fi
 }
 run_once kind-registry -p 127.0.0.1:5001:5000 "$REGISTRY_IMAGE"
+# Docker Hub pull-through cache for kind's containerd and for BuildKit in build pods: each image
+# is pulled from upstream once per environment instead of once per build (rate limits, speed).
+mirror_auth=()
+[ -n "${E2E_DOCKERHUB_USERNAME:-}" ] && mirror_auth=(-e "REGISTRY_PROXY_USERNAME=$E2E_DOCKERHUB_USERNAME" -e "REGISTRY_PROXY_PASSWORD=$E2E_DOCKERHUB_PASSWORD")
+run_once e2e-mirror -e "REGISTRY_PROXY_REMOTEURL=${E2E_DOCKERHUB_UPSTREAM:-https://registry-1.docker.io}" \
+  "${mirror_auth[@]}" "$REGISTRY_IMAGE"
 # S3: SeaweedFS (MinIO no longer publishes images).
 run_once e2e-s3 -p 127.0.0.1:8333:8333 -v "$PWD/hack/e2e/s3.json:/etc/seaweedfs/s3.json:ro" \
   "$S3_IMAGE" server -dir=/data -master.volumeSizeLimitMB=1024 -volume.max=64 -s3 -s3.port=8333 -s3.config=/etc/seaweedfs/s3.json
@@ -33,11 +39,13 @@ run_once e2e-gitea -p 127.0.0.1:3300:3000 -p 127.0.0.1:2222:2222 \
   -e GITEA__webhook__ALLOWED_HOST_LIST='*' -e GITEA__repository__DEFAULT_BRANCH=main \
   -e GITEA__database__DB_TYPE=sqlite3 "$GITEA_IMAGE"
 
-# Registry over plain HTTP for containerd on every node.
+# Registry over plain HTTP, and docker.io through the mirror, for containerd on every node.
 for node in $(kind get nodes --name "$CLUSTER"); do
-  docker exec "$node" mkdir -p /etc/containerd/certs.d/kind-registry:5000
+  docker exec "$node" mkdir -p /etc/containerd/certs.d/kind-registry:5000 /etc/containerd/certs.d/docker.io
   printf '[host."http://kind-registry:5000"]\n  capabilities = ["pull", "resolve"]\n' |
     docker exec -i "$node" tee /etc/containerd/certs.d/kind-registry:5000/hosts.toml >/dev/null
+  printf 'server = "https://registry-1.docker.io"\n\n[host."http://e2e-mirror:5000"]\n  capabilities = ["pull", "resolve"]\n' |
+    docker exec -i "$node" tee /etc/containerd/certs.d/docker.io/hosts.toml >/dev/null
 done
 
 # Gitea admin + S3 bucket.

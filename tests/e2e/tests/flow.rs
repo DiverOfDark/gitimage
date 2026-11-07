@@ -484,3 +484,39 @@ async fn gc_keeps_five_newest_builds() -> anyhow::Result<()> {
     }
     Ok(())
 }
+
+/// Pod Security: a build that cannot create its pod fails fast with the reason, instead of
+/// waiting for the build deadline.
+#[tokio::test]
+#[ignore]
+async fn pod_security_rejection_fails_fast() -> anyhow::Result<()> {
+    let client = client().await?;
+    let ns = TestNs::new(&client, "e2e-psa").await?;
+    let nss: kube::Api<k8s_openapi::api::core::v1::Namespace> = kube::Api::all(client.clone());
+    let patch = serde_json::json!({ "metadata": { "labels": { "pod-security.kubernetes.io/enforce": "baseline" } } });
+    nss.patch(&ns.name, &PatchParams::default(), &Patch::Merge(&patch))
+        .await?;
+    let gitea = Gitea::default();
+    let repo = unique("psa");
+    gitea.create_repo(&repo, false).await?;
+    gitea
+        .commit(&repo, "main", &[("Dockerfile", &dockerfile("psa"))], "psa")
+        .await?;
+    create_gitimage(&ns, "app", &format!("url: {}", Gitea::https_url(&repo))).await?;
+    let api = ns.api::<GitImage>();
+    let msg = wait_for("PodCreationFailed", Duration::from_secs(90), || async {
+        let gi = api.get("app").await?;
+        Ok(gi
+            .status
+            .unwrap_or_default()
+            .condition("Failed")
+            .filter(|c| c.reason == "PodCreationFailed")
+            .map(|c| c.message.clone()))
+    })
+    .await?;
+    assert!(
+        msg.contains("pod-security.kubernetes.io/enforce=privileged"),
+        "{msg}"
+    );
+    Ok(())
+}

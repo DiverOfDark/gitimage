@@ -566,10 +566,15 @@ pub fn push_auth_secret(job: &Job, cfg: &Config, token: &str) -> Secret {
 
 /// Per-namespace ConfigMap: the controller CA and `buildkitd.toml` trusting it for the push host.
 pub fn build_configmap(ns: &str, cfg: &Config, ca_pem: &str) -> ConfigMap {
-    let toml = format!(
+    let mut toml = format!(
         "[registry.\"{}\"]\n  ca = [\"/etc/gitimage/ca.crt\"]\n",
         cfg.push_endpoint.authority()
     );
+    if !cfg.build.buildkitd_config.trim().is_empty() {
+        toml.push_str("\n# build.buildkitdConfig\n");
+        toml.push_str(cfg.build.buildkitd_config.trim_end());
+        toml.push('\n');
+    }
     ConfigMap {
         metadata: ObjectMeta {
             name: Some(BUILD_CONFIGMAP.into()),
@@ -815,6 +820,16 @@ build:
         assert!(json.contains("gitimage-push.gitimage-system.svc:5000"));
         assert!(json.contains("Z2l0aW1hZ2U6dG9r")); // base64("gitimage:tok")
         assert_eq!(s.metadata.owner_references.unwrap()[0].uid, "job-uid");
+    }
+
+    #[test]
+    fn buildkitd_config_is_appended() {
+        let mut cfg = config();
+        cfg.build.buildkitd_config =
+            "[registry.\"docker.io\"]\n  mirrors = [\"mirror:5000\"]".into();
+        let toml = build_configmap("team-a", &cfg, "PEM").data.unwrap()["buildkitd.toml"].clone();
+        assert!(toml.starts_with("[registry.\"gitimage-push"));
+        assert!(toml.contains("mirrors = [\"mirror:5000\"]"), "{toml}");
     }
 
     #[test]

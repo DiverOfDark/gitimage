@@ -195,10 +195,17 @@ pub async fn run(settings: Settings) -> anyhow::Result<()> {
     };
     {
         let (g, j, r) = (gitimages.clone(), build_jobs.clone(), ready.clone());
+        let cert_file = settings.push_cert_dir.join("tls.crt");
         tokio::spawn(async move {
             if g.wait_until_ready().await.is_ok() && j.wait_until_ready().await.is_ok() {
+                tracing::info!("caches synced");
+                // The push endpoint serves only once its certificate is mounted.
+                while !cert_file.exists() {
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                }
+                tokio::time::sleep(Duration::from_secs(3)).await;
                 r.store(true, std::sync::atomic::Ordering::SeqCst);
-                tracing::info!("caches synced; ready");
+                tracing::info!("push certificate loaded; ready");
             }
         });
     }

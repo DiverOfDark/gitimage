@@ -164,10 +164,19 @@ pub async fn run(
     let wait = store.clone();
     let ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let ready_flag = ready.clone();
+    let cert_file = cert_dir.join("tls.crt");
     tokio::spawn(async move {
         if wait.wait_until_ready().await.is_ok() {
-            ready_flag.store(true, std::sync::atomic::Ordering::SeqCst);
             tracing::info!("GitImage cache synced");
+            // Ready only once the serving certificate is mounted too: the Secret is created by
+            // the controller and can take a minute to reach the volume.
+            while !cert_file.exists() {
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            }
+            // serve_tls polls every 2 s; give it time to bind.
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            ready_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+            tracing::info!("serving certificate loaded; ready");
         }
     });
 

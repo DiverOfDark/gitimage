@@ -50,8 +50,12 @@ does not.
 
 ## 3. Build something
 
+Build pods need the `privileged` Pod Security level in their namespace (see
+[Security model](operations/security.md)).
+
 ```sh
 kubectl create namespace demo
+kubectl label namespace demo pod-security.kubernetes.io/enforce=privileged
 kubectl apply -n demo -f - <<'YAML'
 apiVersion: gitimage.dev/v1alpha1
 kind: GitImage

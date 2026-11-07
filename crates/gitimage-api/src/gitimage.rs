@@ -232,6 +232,10 @@ pub struct BuildRecord {
     /// Failure reason for `Failed` records, e.g. `BuildFailed`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// Human-readable detail for `Failed` records (admission error, BuildKit error), at most
+    /// 512 characters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
     /// RFC 3339.
     pub finished_at: String,
 }
@@ -277,6 +281,8 @@ pub mod failure_reasons {
     pub const PUSH_FAILED: &str = "PushFailed";
     pub const DEADLINE_EXCEEDED: &str = "DeadlineExceeded";
     pub const SECRET_MISSING: &str = "SecretMissing";
+    /// The Job could not create its pod, e.g. Pod Security admission forbids it.
+    pub const POD_CREATION_FAILED: &str = "PodCreationFailed";
 }
 
 #[cfg(test)]
@@ -336,6 +342,7 @@ interval: 5m
                     context_tree: None,
                     source_revision: None,
                     reason: None,
+                    message: None,
                     finished_at: "2026-11-07T00:00:00Z".into(),
                 },
                 BuildRecord {
@@ -345,6 +352,7 @@ interval: 5m
                     context_tree: None,
                     source_revision: None,
                     reason: None,
+                    message: None,
                     finished_at: "2026-11-07T00:00:00Z".into(),
                 },
             ],

@@ -259,6 +259,10 @@ pub struct BuildDefaults {
     pub cache: CacheMode,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub extra_opts: BTreeMap<String, String>,
+    /// Extra `buildkitd.toml` appended to the generated one: registry mirrors, private or
+    /// plain-HTTP registries (`[registry."docker.io"] mirrors = ["mirror.example.com"]`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub buildkitd_config: String,
 }
 
 impl Default for BuildDefaults {
@@ -272,6 +276,7 @@ impl Default for BuildDefaults {
             labels: BTreeMap::new(),
             cache: CacheMode::default(),
             extra_opts: BTreeMap::new(),
+            buildkitd_config: String::new(),
         }
     }
 }

@@ -32,7 +32,10 @@ case "$STORAGE" in
   s3) args+=(--set storage.type=s3 --set storage.s3.bucket=gitimage --set storage.s3.endpoint=http://e2e-s3:8333
              --set storage.s3.secret=s3-creds --set storage.s3.pathStyle=true) ;;
 esac
-helm upgrade --install gitimage charts/gitimage -n "$NS" "${args[@]}" --wait --timeout 5m
+bkcfg=$(mktemp); trap 'rm -f "$bkcfg"' EXIT
+printf '[registry."docker.io"]\n  mirrors = ["e2e-mirror:5000"]\n\n[registry."e2e-mirror:5000"]\n  http = true\n' > "$bkcfg"
+args+=(--set-file build.buildkitdConfig="$bkcfg")
+helm upgrade --install gitimage charts/gitimage -n "$NS" "${args[@]}"
 kubectl -n "$NS" rollout restart deploy/gitimage-controller deploy/gitimage-webhook >/dev/null
 kubectl -n "$NS" rollout status deploy/gitimage-controller --timeout 5m
 kubectl -n "$NS" rollout status deploy/gitimage-webhook --timeout 3m

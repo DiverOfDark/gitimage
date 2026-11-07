@@ -268,6 +268,7 @@ mod tests {
                 context_tree: None,
                 source_revision: None,
                 reason: None,
+                message: None,
                 finished_at: "t".into(),
             }],
             ..Default::default()
