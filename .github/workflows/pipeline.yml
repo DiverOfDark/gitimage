@@ -103,7 +103,9 @@ jobs:
   e2e:
     needs: build
     # E2E_RUNS_ON can send only e2e elsewhere; otherwise the same runner as every job.
-    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || vars.E2E_RUNS_ON || vars.RUNS_ON || 'ubuntu-latest' }}
+    # Isolations listed in E2E_GITHUB_ISOLATIONS always run on GitHub-hosted runners (e.g.
+    # gvisor on hosts with user.max_user_namespaces=0, such as Talos defaults).
+    runs-on: ${{ ((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) || contains(fromJSON(vars.E2E_GITHUB_ISOLATIONS || '[]'), matrix.isolation)) && 'ubuntu-latest' || vars.E2E_RUNS_ON || vars.RUNS_ON || 'ubuntu-latest' }}
     timeout-minutes: 45
     strategy:
       fail-fast: false

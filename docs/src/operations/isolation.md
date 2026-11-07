@@ -21,4 +21,9 @@ node's containerd config before enabling it.
 **userns in kind.** runc cannot mount sysfs for a user-namespaced pod when the node itself is a
 container, so kind cannot test this mode; use it on VM or bare-metal nodes with Kubernetes 1.33+.
 
+**Hosts without user namespaces.** gVisor's gofer, rootless BuildKit and `userns` mode all
+create user namespaces; with `user.max_user_namespaces=0` (the Talos default) they fail
+(`fork/exec /proc/self/exe: no space left on device`). Kata with `privilegedInSandbox` and
+`privileged` mode do not need them.
+
 Use the RuntimeClass's `scheduling.nodeSelector` to keep Kata builds on nodes that have it.
