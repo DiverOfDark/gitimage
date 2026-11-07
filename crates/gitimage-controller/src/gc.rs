@@ -46,6 +46,14 @@ pub fn referenced(body: &[u8]) -> Vec<Digest> {
     out
 }
 
+/// Revisions among `candidates` that status has no build record for yet.
+pub fn unrecorded(
+    status: &gitimage_api::GitImageStatus,
+    candidates: impl Iterator<Item = String>,
+) -> Vec<String> {
+    candidates.filter(|r| status.record(r).is_none()).collect()
+}
+
 /// Digests of `<pull_host>/<ns>/<name>@sha256:...` images that pods currently run.
 pub fn digests_in_use(pods: &[Pod], prefix: &str) -> HashSet<String> {
     let mut out = HashSet::new();
@@ -136,11 +144,12 @@ pub async fn collect(ctx: &Ctx, gi: &GitImage, pods: &[Pod]) -> anyhow::Result<u
             roots.push(d);
         }
     }
-    // Revisions still in flight: every build Job that exists (they live 1 h after finishing)
-    // and the newest commit. Their tags may be pushed but not yet recorded in status.
+    // Revisions in flight: a build Job exists (or it is the newest commit) but status has no
+    // record yet, so its tag may be pushed and not yet recorded. Once recorded, the
+    // keep-newest-5 rule applies.
     let jobs: Api<Job> = Api::namespaced(ctx.client.clone(), &ns);
     let lp = ListParams::default().labels(&format!("{}={}", gitimage_api::keys::NAME_LABEL, name));
-    let in_flight: Vec<String> = jobs
+    let job_revisions: Vec<String> = jobs
         .list(&lp)
         .await?
         .items
@@ -152,8 +161,13 @@ pub async fn collect(ctx: &Ctx, gi: &GitImage, pods: &[Pod]) -> anyhow::Result<u
                 .get(gitimage_api::keys::REVISION_LABEL)
                 .cloned()
         })
-        .chain(status.latest_revision.clone())
         .collect();
+    let in_flight = unrecorded(
+        &status,
+        job_revisions
+            .into_iter()
+            .chain(status.latest_revision.clone()),
+    );
     let kept_tags: HashSet<String> = status
         .builds
         .iter()
@@ -242,6 +256,24 @@ mod tests {
         assert_eq!(referenced(m.as_bytes()).len(), 2);
         let i = format!(r#"{{"manifests":[{{"digest":"{A}"}}]}}"#);
         assert_eq!(referenced(i.as_bytes()), vec![Digest::parse(A).unwrap()]);
+    }
+
+    #[test]
+    fn only_unrecorded_revisions_are_in_flight() {
+        let status = gitimage_api::GitImageStatus {
+            builds: vec![gitimage_api::BuildRecord {
+                revision: "old".into(),
+                outcome: gitimage_api::BuildOutcome::Built,
+                digest: Some(A.into()),
+                context_tree: None,
+                source_revision: None,
+                reason: None,
+                finished_at: "t".into(),
+            }],
+            ..Default::default()
+        };
+        let got = unrecorded(&status, ["old".to_string(), "new".to_string()].into_iter());
+        assert_eq!(got, vec!["new".to_string()]);
     }
 
     #[test]

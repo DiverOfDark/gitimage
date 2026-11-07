@@ -97,18 +97,22 @@ impl Drop for TestNs {
         if std::env::var("E2E_KEEP").is_ok() {
             return;
         }
-        let client = self.client.clone();
+        // A fresh runtime AND a fresh client: the test's client drives its connections on the
+        // test runtime, which this thread blocks, so reusing it here would deadlock.
         let name = self.name.clone();
         let _ = std::thread::spawn(move || {
-            let rt = tokio::runtime::Builder::new_current_thread()
+            let Ok(rt) = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
-                .build();
-            if let Ok(rt) = rt {
-                rt.block_on(async {
+                .build()
+            else {
+                return;
+            };
+            rt.block_on(async {
+                if let Ok(client) = client().await {
                     let api: Api<Namespace> = Api::all(client);
                     let _ = api.delete(&name, &DeleteParams::default()).await;
-                });
-            }
+                }
+            });
         })
         .join();
     }
