@@ -9,7 +9,7 @@ Nothing falls back to a weaker mode, and nothing builds.
 | --- | --- | --- | --- |
 | Kata | `runtimeClass`, `runtimeClassName: kata-qemu`, `privilegedInSandbox: true` | rootful BuildKit, privileged inside the VM | kind + kata-deploy (KVM runners) |
 | gVisor | `runtimeClass`, `runtimeClassName: gvisor` | rootless BuildKit, seccomp/AppArmor unconfined inside the sandbox | kind + runsc |
-| Sysbox | `runtimeClass`, `runtimeClassName: sysbox-runc`, `rootfulInSandbox: true` | rootful BuildKit, unprivileged, `hostUsers: false`; Pod Security `baseline` | no; kind + Sysbox 0.7.1 locally (`hack/e2e/sysbox.sh`) |
+| Sysbox | `runtimeClass`, `runtimeClassName: sysbox-runc`, `rootfulInSandbox: true` | rootful BuildKit, unprivileged, `hostUsers: false`; Pod Security `baseline` | kind + Sysbox 0.7.1 (`hack/e2e/sysbox.sh`) |
 | User namespaces | `userns` | rootless BuildKit, `hostUsers: false` | not on kind (see below) |
 | Privileged | `privileged` + `allowPrivileged: true` | rootful BuildKit, privileged on the node | kind |
 
@@ -35,9 +35,8 @@ kind worker (Kubernetes 1.37, containerd 2.3; the installer would refuse 1.37 an
 sysctls of the host kernel, which kind nodes share), remounts the node's `/sys`
 read-write and removes kind's bind mounts over `/sys/devices/virtual/dmi/id/product_*`: with
 either in place the kernel refuses the container's sysfs mount (`sysfs mount through procfd to
-sys caused: operation not permitted`). It is not in the default CI matrix; add `sysbox` to the
-repository variable `E2E_ISOLATIONS` to run it (and to `E2E_GITHUB_ISOLATIONS` if the
-self-hosted runners disable user namespaces).
+sys caused: operation not permitted`). CI always runs it (matrix `include`, independent of
+`E2E_ISOLATIONS`); the nodes need user namespaces enabled.
 
 **userns in kind.** runc cannot mount sysfs for a user-namespaced pod when the node itself is a
 container, so kind cannot test this mode; use it on VM or bare-metal nodes with Kubernetes 1.33+.
