@@ -30,6 +30,7 @@ fn repo_root() -> std::path::PathBuf {
 
 /// Kubernetes client for the kind cluster, from `hack/.kubeconfig` only.
 pub async fn client() -> anyhow::Result<Client> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let path = std::env::var("E2E_KUBECONFIG")
         .map(Into::into)
         .unwrap_or_else(|_| repo_root().join("hack/.kubeconfig"));
