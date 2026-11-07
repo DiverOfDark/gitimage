@@ -127,7 +127,8 @@ mod tests {
             .unwrap();
         let resolved = crate::resolve(&tag, "v0.34.2").unwrap();
         assert!(!resolved.movable);
-        assert_eq!(resolved.sha.len(), 40);
+        // annotated tag: the peeled commit, not the tag object a1b68eb
+        assert_eq!(resolved.sha, "8c579433824224dc64a158cf8734495b6e2b186a");
         let master = client
             .list_refs(url, &Credentials::None, "master")
             .await
