@@ -8,9 +8,11 @@ use gitimage_api::{GitImage, Resources, keys};
 use k8s_openapi::api::batch::v1::{Job, JobSpec};
 use k8s_openapi::api::core::v1::{
     AppArmorProfile, Capabilities, ConfigMap, ConfigMapVolumeSource, Container,
-    EmptyDirVolumeSource, EnvVar, EnvVarSource, KeyToPath, PodSecurityContext, PodSpec,
+    EmptyDirVolumeSource, EnvVar, EnvVarSource, EphemeralVolumeSource, KeyToPath,
+    PersistentVolumeClaimSpec, PersistentVolumeClaimTemplate, PodSecurityContext, PodSpec,
     PodTemplateSpec, ResourceRequirements, SeccompProfile, Secret, SecretKeySelector,
-    SecretVolumeSource, SecurityContext, Volume, VolumeMount,
+    SecretVolumeSource, SecurityContext, Volume, VolumeDevice, VolumeMount,
+    VolumeResourceRequirements,
 };
 use k8s_openapi::api::networking::v1::{
     IPBlock, NetworkPolicy, NetworkPolicyEgressRule, NetworkPolicyPeer, NetworkPolicyPort,
@@ -249,13 +251,100 @@ fn resources(r: &Resources) -> Option<ResourceRequirements> {
     })
 }
 
-/// BuildKit's state volume (`build.stateVolume`): node disk, or tmpfs with `medium: Memory`.
-pub fn state_empty_dir(cfg: &Config) -> EmptyDirVolumeSource {
+const STATE_VOLUME: &str = "buildkit-state";
+const STATE_DEVICE: &str = "/dev/buildkit-state";
+
+/// BuildKit's state volume (`build.stateVolume`), added to `pod` and mounted into `buildkit`
+/// (whose command must already be set). emptyDir (node disk, or tmpfs with `medium: Memory`)
+/// or a raw block ephemeral PVC: an init container formats it, then BuildKit's command is
+/// wrapped to mount it at the state dir before exec'ing the original command.
+pub fn attach_state_volume(cfg: &Config, pod: &mut PodSpec, buildkit: &mut Container) {
     let sv = &cfg.build.state_volume;
-    EmptyDirVolumeSource {
-        medium: (!sv.medium.is_empty()).then(|| sv.medium.clone()),
-        size_limit: sv.size_limit.clone().map(Quantity),
-    }
+    let state_dir = BuildkitLayout::for_config(cfg).state_dir;
+    let volumes = pod.volumes.get_or_insert_with(Vec::new);
+    let Some(b) = &sv.block else {
+        volumes.push(Volume {
+            name: STATE_VOLUME.into(),
+            empty_dir: Some(EmptyDirVolumeSource {
+                medium: (!sv.medium.is_empty()).then(|| sv.medium.clone()),
+                size_limit: sv.size_limit.clone().map(Quantity),
+            }),
+            ..Default::default()
+        });
+        buildkit
+            .volume_mounts
+            .get_or_insert_with(Vec::new)
+            .push(mount(STATE_VOLUME, state_dir, false));
+        return;
+    };
+    volumes.push(Volume {
+        name: STATE_VOLUME.into(),
+        ephemeral: Some(EphemeralVolumeSource {
+            volume_claim_template: Some(PersistentVolumeClaimTemplate {
+                metadata: Some(ObjectMeta {
+                    labels: Some(BTreeMap::from([(
+                        "app.kubernetes.io/managed-by".to_string(),
+                        "gitimage".to_string(),
+                    )])),
+                    ..Default::default()
+                }),
+                spec: PersistentVolumeClaimSpec {
+                    access_modes: Some(vec!["ReadWriteOnce".into()]),
+                    volume_mode: Some("Block".into()),
+                    storage_class_name: b.storage_class_name.clone(),
+                    resources: Some(VolumeResourceRequirements {
+                        requests: Some(BTreeMap::from([(
+                            "storage".to_string(),
+                            Quantity(b.size.clone()),
+                        )])),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+            }),
+        }),
+        ..Default::default()
+    });
+    let device = || {
+        Some(vec![VolumeDevice {
+            name: STATE_VOLUME.into(),
+            device_path: STATE_DEVICE.into(),
+        }])
+    };
+    // Fresh volume per build pod; nodiscard skips a slow full-device TRIM on network storage.
+    pod.init_containers
+        .get_or_insert_with(Vec::new)
+        .push(Container {
+            name: "format-state".into(),
+            image: Some(b.format_image.clone()),
+            command: Some(vec![
+                format!("mkfs.{}", b.fs_type),
+                "-q".into(),
+                "-F".into(),
+                "-E".into(),
+                "nodiscard".into(),
+                STATE_DEVICE.into(),
+            ]),
+            volume_devices: device(),
+            security_context: Some(SecurityContext {
+                privileged: Some(true),
+                ..Default::default()
+            }),
+            termination_message_policy: Some("FallbackToLogsOnError".into()),
+            ..Default::default()
+        });
+    buildkit.volume_devices = device();
+    let original = buildkit.command.take().unwrap_or_default();
+    let mut command = vec![
+        "sh".into(),
+        "-c".into(),
+        format!(
+            "mkdir -p {state_dir} && mount -t {} -o noatime {STATE_DEVICE} {state_dir} && exec \"$0\" \"$@\"",
+            b.fs_type
+        ),
+    ];
+    command.extend(original);
+    buildkit.command = Some(command);
 }
 
 /// Isolation fields for the build pod and the BuildKit container (design section 8).
@@ -361,11 +450,6 @@ pub fn build_job(gi: &GitImage, cfg: &Config, p: &BuildParams) -> Job {
             ..Default::default()
         },
         Volume {
-            name: "buildkit-state".into(),
-            empty_dir: Some(state_empty_dir(cfg)),
-            ..Default::default()
-        },
-        Volume {
             name: "tmp".into(),
             empty_dir: Some(EmptyDirVolumeSource::default()),
             ..Default::default()
@@ -451,7 +535,6 @@ pub fn build_job(gi: &GitImage, cfg: &Config, p: &BuildParams) -> Job {
     });
     let mut bk_mounts = vec![
         mount("workspace", WORKSPACE, true),
-        mount("buildkit-state", layout.state_dir, false),
         mount("push-auth", layout.docker_config_dir, true),
         VolumeMount {
             name: "build-config".into(),
@@ -522,6 +605,7 @@ pub fn build_job(gi: &GitImage, cfg: &Config, p: &BuildParams) -> Job {
         ..Default::default()
     };
     pod_overlay(cfg, &mut pod, &mut buildkit);
+    attach_state_volume(cfg, &mut pod, &mut buildkit);
     pod.containers = vec![buildkit];
 
     let mut annotations = BTreeMap::new();
@@ -876,6 +960,82 @@ build:
             .unwrap();
         assert_eq!(state.medium.as_deref(), Some("Memory"));
         assert_eq!(state.size_limit, Some(Quantity("6Gi".into())));
+    }
+
+    #[test]
+    fn block_state_volume_is_formatted_and_mounted_by_buildkit() {
+        let mut cfg = config();
+        cfg.build_policy.isolation.mode = IsolationMode::Privileged;
+        cfg.build.state_volume.block = Some(gitimage_api::config::BlockStateVolume {
+            storage_class_name: Some("ceph-block".into()),
+            size: "20Gi".into(),
+            fs_type: "ext3".into(),
+            format_image: "debian:bookworm-slim".into(),
+        });
+        let job = build_job(&gitimage(), &cfg, &params());
+        let pod = job.spec.unwrap().template.spec.unwrap();
+        let state = pod
+            .volumes
+            .as_ref()
+            .unwrap()
+            .iter()
+            .find(|v| v.name == "buildkit-state")
+            .unwrap();
+        assert!(state.empty_dir.is_none());
+        let claim = state
+            .ephemeral
+            .clone()
+            .unwrap()
+            .volume_claim_template
+            .unwrap()
+            .spec;
+        assert_eq!(claim.volume_mode.as_deref(), Some("Block"));
+        assert_eq!(claim.storage_class_name.as_deref(), Some("ceph-block"));
+        assert_eq!(
+            claim.resources.unwrap().requests.unwrap()["storage"],
+            Quantity("20Gi".into())
+        );
+        let inits = pod.init_containers.unwrap();
+        let fmt = inits.last().unwrap();
+        assert_eq!(fmt.command.as_ref().unwrap()[0], "mkfs.ext3");
+        assert_eq!(
+            fmt.volume_devices.as_ref().unwrap()[0].device_path,
+            "/dev/buildkit-state"
+        );
+        let bk = &pod.containers[0];
+        assert!(
+            bk.volume_mounts
+                .as_ref()
+                .unwrap()
+                .iter()
+                .all(|m| m.name != "buildkit-state")
+        );
+        assert_eq!(
+            bk.volume_devices.as_ref().unwrap()[0].device_path,
+            "/dev/buildkit-state"
+        );
+        let cmd = bk.command.as_ref().unwrap();
+        assert_eq!(&cmd[..2], &["sh".to_string(), "-c".to_string()]);
+        assert!(cmd[2].contains("mount -t ext3 -o noatime /dev/buildkit-state /var/lib/buildkit"));
+        assert_eq!(cmd[3], "buildctl-daemonless.sh");
+        // The isolation check exercises the same volume.
+        let check = crate::isolation::check_job(&cfg, "gitimage-system")
+            .spec
+            .unwrap()
+            .template
+            .spec
+            .unwrap();
+        assert!(
+            check
+                .init_containers
+                .unwrap()
+                .iter()
+                .any(|c| c.name == "format-state")
+        );
+        assert_ne!(
+            crate::isolation::check_key(&cfg),
+            crate::isolation::check_key(&config())
+        );
     }
 
     #[test]

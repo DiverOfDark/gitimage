@@ -25,9 +25,7 @@ case "$ISOLATION" in
   sysbox) args+=(--set buildPolicy.isolation.mode=runtimeClass --set buildPolicy.isolation.runtimeClassName=sysbox-runc
                  --set buildPolicy.isolation.rootfulInSandbox=true) ;;
   kata*) args+=(--set buildPolicy.isolation.mode=runtimeClass --set buildPolicy.isolation.runtimeClassName="$ISOLATION"
-                --set buildPolicy.isolation.privilegedInSandbox=true
-                # Same as Talos homelabs, whose virtiofs lacks xattrs: BuildKit state on tmpfs.
-                --set build.stateVolume.medium=Memory --set build.stateVolume.sizeLimit=4Gi) ;;
+                --set buildPolicy.isolation.privilegedInSandbox=true) ;;
   *) args+=(--set buildPolicy.isolation.mode=runtimeClass --set buildPolicy.isolation.runtimeClassName="$ISOLATION") ;;
 esac
 case "$STORAGE" in

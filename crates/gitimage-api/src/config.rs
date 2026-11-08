@@ -92,10 +92,36 @@ impl Config {
                     .into(),
             ));
         }
-        if !matches!(self.build.state_volume.medium.as_str(), "" | "Memory") {
+        let sv = &self.build.state_volume;
+        if !matches!(sv.medium.as_str(), "" | "Memory") {
             return Err(ConfigError::Invalid(
                 "build.stateVolume.medium must be \"\" or \"Memory\"".into(),
             ));
+        }
+        if let Some(b) = &sv.block {
+            if !sv.medium.is_empty() || sv.size_limit.is_some() {
+                return Err(ConfigError::Invalid(
+                    "build.stateVolume.block excludes medium and sizeLimit".into(),
+                ));
+            }
+            if !matches!(b.fs_type.as_str(), "ext3" | "ext4") {
+                return Err(ConfigError::Invalid(
+                    "build.stateVolume.block.fsType must be ext3 or ext4".into(),
+                ));
+            }
+            if b.size.is_empty() {
+                return Err(ConfigError::Invalid(
+                    "build.stateVolume.block.size is required".into(),
+                ));
+            }
+            // Formatting and mounting a block device needs a privileged BuildKit container.
+            let privileged = iso.mode == IsolationMode::Privileged
+                || (iso.mode == IsolationMode::RuntimeClass && iso.privileged_in_sandbox);
+            if !privileged {
+                return Err(ConfigError::Invalid(
+                    "build.stateVolume.block needs isolation mode privileged or runtimeClass with privilegedInSandbox".into(),
+                ));
+            }
         }
         match self.storage.kind {
             StorageType::Registry if self.storage.registry.is_none() => Err(ConfigError::Invalid(
@@ -315,6 +341,35 @@ pub struct StateVolume {
     /// emptyDir sizeLimit, e.g. `6Gi`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size_limit: Option<String>,
+    /// A raw block (`volumeMode: Block`) ephemeral PVC instead of an emptyDir, formatted per
+    /// build and mounted by BuildKit itself. Kata hands block volumes to the VM as a virtio-blk
+    /// disk, so the state lives on a real ext3/ext4 filesystem rather than a virtiofs share.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub block: Option<BlockStateVolume>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BlockStateVolume {
+    /// StorageClass that supports `volumeMode: Block` (e.g. Ceph RBD); default class if unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage_class_name: Option<String>,
+    /// Requested size, e.g. `20Gi`.
+    pub size: String,
+    /// `ext4` (default) or `ext3`.
+    #[serde(default = "default_fs_type")]
+    pub fs_type: String,
+    /// Image providing `mkfs.<fsType>` (e2fsprogs) for the format init container.
+    #[serde(default = "default_format_image")]
+    pub format_image: String,
+}
+
+fn default_fs_type() -> String {
+    "ext4".into()
+}
+
+fn default_format_image() -> String {
+    "debian:bookworm-slim".into()
 }
 
 impl Default for BuildDefaults {
@@ -501,5 +556,31 @@ network: { clusterCIDRs: [10.244.0.0/16, 10.96.0.0/12] }
             "mode: privileged",
         );
         assert!(Config::from_yaml(&bad).is_err());
+    }
+
+    #[test]
+    fn block_state_volume_needs_privileged_buildkit() {
+        let kata = HOMELAB.replace(
+            "runtimeClassName: kata }",
+            "runtimeClassName: kata, privilegedInSandbox: true }",
+        );
+        let ok = format!(
+            "{kata}build: {{ stateVolume: {{ block: {{ storageClassName: ceph-block, size: 20Gi }} }} }}\n"
+        );
+        let b = Config::from_yaml(&ok)
+            .unwrap()
+            .build
+            .state_volume
+            .block
+            .unwrap();
+        assert_eq!(b.fs_type, "ext4");
+        assert_eq!(b.format_image, "debian:bookworm-slim");
+        let ext2 = ok.replace("size: 20Gi", "size: 20Gi, fsType: ext2");
+        assert!(Config::from_yaml(&ext2).is_err());
+        let mixed = ok.replace("{ block:", "{ medium: Memory, block:");
+        assert!(Config::from_yaml(&mixed).is_err());
+        let unprivileged = ok.replace(", privilegedInSandbox: true", "");
+        let err = Config::from_yaml(&unprivileged).unwrap_err().to_string();
+        assert!(err.contains("privilegedInSandbox"), "{err}");
     }
 }

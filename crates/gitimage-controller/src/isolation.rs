@@ -8,9 +8,7 @@ use std::time::{Duration, Instant};
 use gitimage_api::Config;
 use gitimage_api::config::IsolationMode;
 use k8s_openapi::api::batch::v1::{Job, JobSpec};
-use k8s_openapi::api::core::v1::{
-    ConfigMap, Container, Pod, PodSpec, PodTemplateSpec, Volume, VolumeMount,
-};
+use k8s_openapi::api::core::v1::{ConfigMap, Container, Pod, PodSpec, PodTemplateSpec};
 use k8s_openapi::api::node::v1::RuntimeClass;
 use kube::api::{Api, DeleteParams, ListParams, LogParams, PostParams, PropagationPolicy};
 use kube::{Client, ResourceExt};
@@ -29,7 +27,8 @@ pub struct IsolationUnavailable(pub String);
 pub fn check_key(cfg: &Config) -> String {
     let iso = serde_json::to_string(&cfg.build_policy.isolation).unwrap_or_default();
     let image = crate::job::BuildkitLayout::for_config(cfg).image;
-    hex::encode(&sha2::Sha256::digest(format!("{iso}|{image}").as_bytes())[..8])
+    let state = serde_json::to_string(&cfg.build.state_volume).unwrap_or_default();
+    hex::encode(&sha2::Sha256::digest(format!("{iso}|{image}|{state}").as_bytes())[..8])
 }
 
 /// The check Job: the build overlay plus `buildctl-daemonless.sh debug workers`.
@@ -38,11 +37,6 @@ pub fn check_job(cfg: &Config, ns: &str) -> Job {
         restart_policy: Some("Never".into()),
         automount_service_account_token: Some(false),
         enable_service_links: Some(false),
-        volumes: Some(vec![Volume {
-            name: "buildkit-state".into(),
-            empty_dir: Some(crate::job::state_empty_dir(cfg)),
-            ..Default::default()
-        }]),
         ..Default::default()
     };
     let layout = crate::job::BuildkitLayout::for_config(cfg);
@@ -51,15 +45,11 @@ pub fn check_job(cfg: &Config, ns: &str) -> Job {
         image: Some(layout.image.clone()),
         command: Some(vec!["buildctl-daemonless.sh".into()]),
         args: Some(vec!["debug".into(), "workers".into()]),
-        volume_mounts: Some(vec![VolumeMount {
-            name: "buildkit-state".into(),
-            mount_path: layout.state_dir.into(),
-            ..Default::default()
-        }]),
         termination_message_policy: Some("FallbackToLogsOnError".into()),
         ..Default::default()
     };
     crate::job::pod_overlay(cfg, &mut pod, &mut c);
+    crate::job::attach_state_volume(cfg, &mut pod, &mut c);
     pod.containers = vec![c];
     let labels = BTreeMap::from([
         (

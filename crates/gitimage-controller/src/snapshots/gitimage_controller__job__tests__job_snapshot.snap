@@ -76,9 +76,6 @@ spec:
             - mountPath: /workspace
               name: workspace
               readOnly: true
-            - mountPath: /home/user/.local/share/buildkit
-              name: buildkit-state
-              readOnly: false
             - mountPath: /home/user/.docker
               name: push-auth
               readOnly: true
@@ -94,6 +91,9 @@ spec:
               name: build-secret-npmrc
               readOnly: true
               subPath: npmrc
+            - mountPath: /home/user/.local/share/buildkit
+              name: buildkit-state
+              readOnly: false
       enableServiceLinks: false
       initContainers:
         - args:
@@ -143,8 +143,6 @@ spec:
         - emptyDir: {}
           name: workspace
         - emptyDir: {}
-          name: buildkit-state
-        - emptyDir: {}
           name: tmp
         - name: push-auth
           secret:
@@ -166,4 +164,6 @@ spec:
                 mode: 288
                 path: npmrc
             secretName: npm-token
+        - emptyDir: {}
+          name: buildkit-state
   ttlSecondsAfterFinished: 3600

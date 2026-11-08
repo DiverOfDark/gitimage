@@ -66,6 +66,11 @@ data:
         {{- with .Values.build.stateVolume.sizeLimit }}
         sizeLimit: {{ . | quote }}
         {{- end }}
+        {{- with .Values.build.stateVolume.block }}
+        {{- if .size }}
+        block: {{ toJson . }}
+        {{- end }}
+        {{- end }}
     network:
       clusterCIDRs: {{ toJson .Values.network.clusterCIDRs }}
     node:
