@@ -752,8 +752,12 @@ pub async fn reconcile(gi: Arc<GitImage>, ctx: Arc<Ctx>) -> Result<Action, Error
                     set_building(&ctx, &mut status, j, generation, &sha);
                 }
             },
-            // A rebuild request: the finished Job stays until its TTL, so start a new attempt.
-            Some(j) if rebuild_requested => {
+            // A rebuild request: the failed Job stays until its TTL, so start a new attempt. A
+            // Job that succeeded is recorded below instead.
+            Some(j)
+                if rebuild_requested
+                    && j.status.as_ref().and_then(|s| s.failed).unwrap_or(0) > 0 =>
+            {
                 let skip = j.annotations().get("gitimage.dev/skip-if-tree").cloned();
                 match start_build(&ctx, &gi, &sha, job_attempt(j) + 1, skip).await? {
                     Ok(job) => {
@@ -1060,7 +1064,7 @@ async fn finish(
     action: Action,
 ) -> Result<Action, Error> {
     if &status != old {
-        let patch = serde_json::json!({ "status": status });
+        let patch = serde_json::json!({ "status": status_patch(old, &status) });
         api.patch_status(
             &gi.name_any(),
             &PatchParams::default(),
@@ -1070,6 +1074,29 @@ async fn finish(
     }
     let _ = ctx;
     Ok(action)
+}
+
+/// The full new status as a JSON merge patch. Fields that became empty are skipped when
+/// serializing (`skip_serializing_if`), and a merge patch leaves absent keys untouched, so
+/// every key `old` had and `new` lacks is sent as an explicit `null` (e.g. a rebuild that drops
+/// the only, failed, build record must clear `builds` on the server).
+fn status_patch(old: &GitImageStatus, new: &GitImageStatus) -> serde_json::Value {
+    fn null_removed(old: &serde_json::Value, new: &mut serde_json::Value) {
+        if let (Some(o), Some(n)) = (old.as_object(), new.as_object_mut()) {
+            for (k, ov) in o {
+                match n.get_mut(k) {
+                    None => {
+                        n.insert(k.clone(), serde_json::Value::Null);
+                    }
+                    Some(nv) => null_removed(ov, nv),
+                }
+            }
+        }
+    }
+    let old = serde_json::to_value(old).unwrap_or_default();
+    let mut new = serde_json::to_value(new).unwrap_or_default();
+    null_removed(&old, &mut new);
+    new
 }
 
 /// Ensures the hook token Secret and writes its hash and the hook URL into status.
@@ -1125,4 +1152,31 @@ async fn ensure_hook(ctx: &Ctx, gi: &GitImage, status: &mut GitImageStatus) -> R
         .as_ref()
         .map(|b| format!("{}/hooks/{token}", b.trim_end_matches('/')));
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn status_patch_clears_fields_that_became_empty() {
+        let old = GitImageStatus {
+            builds: vec![record("cf5480d", BuildOutcome::Failed)],
+            image: Some("localhost:25050/a/b@sha256:1".into()),
+            latest_revision: Some("cf5480d".into()),
+            ..Default::default()
+        };
+        let new = GitImageStatus {
+            latest_revision: Some("cf5480d".into()),
+            handled_rebuild: Some("1".into()),
+            ..Default::default()
+        };
+        let p = status_patch(&old, &new);
+        assert_eq!(p["builds"], serde_json::Value::Null);
+        assert!(p.as_object().unwrap().contains_key("builds"));
+        assert_eq!(p["image"], serde_json::Value::Null);
+        assert_eq!(p["latestRevision"], "cf5480d");
+        assert_eq!(p["handledRebuild"], "1");
+        assert!(!p.as_object().unwrap().contains_key("revision"));
+    }
 }

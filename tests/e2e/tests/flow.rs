@@ -5,7 +5,7 @@ use std::time::Duration;
 use e2e::*;
 use gitimage_api::{BuildOutcome, GitImage};
 use k8s_openapi::api::apps::v1::Deployment;
-use k8s_openapi::api::core::v1::Pod;
+use k8s_openapi::api::core::v1::{Pod, Secret};
 use kube::api::{Patch, PatchParams, PostParams};
 
 const BUILD: Duration = Duration::from_secs(420);
@@ -302,7 +302,8 @@ async fn cross_tenant_reference_is_denied() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// A failing Dockerfile ends as Failed and is retried only by the rebuild annotation.
+/// A failing build ends as Failed, is retried only by the rebuild annotation, and a retry that
+/// succeeds replaces the failure (the build secret flips from "no" to "ok" in between).
 #[tokio::test]
 #[ignore]
 async fn failed_build_is_reported_and_rebuild_retries() -> anyhow::Result<()> {
@@ -311,21 +312,18 @@ async fn failed_build_is_reported_and_rebuild_retries() -> anyhow::Result<()> {
     let gitea = Gitea::default();
     let repo = unique("fail");
     gitea.create_repo(&repo, false).await?;
+    create_secret(&ns, "flag", &[("token", "no")]).await?;
+    let df = "FROM docker.io/library/busybox:1.37\nRUN --mount=type=secret,id=flag test \"$(cat /run/secrets/flag)\" = ok\nCMD [\"sleep\", \"3600\"]\n";
     let sha = gitea
-        .commit(
-            &repo,
-            "main",
-            &[(
-                "Dockerfile",
-                "FROM docker.io/library/busybox:1.37\nRUN exit 7\n",
-            )],
-            "bad",
-        )
+        .commit(&repo, "main", &[("Dockerfile", df)], "flaky")
         .await?;
     create_gitimage(
         &ns,
         "app",
-        &format!("url: {}\ninterval: 5s", Gitea::https_url(&repo)),
+        &format!(
+            "url: {}\ninterval: 5s\nbuild: {{ secrets: [{{ id: flag, secretRef: {{ name: flag }} }}] }}",
+            Gitea::https_url(&repo)
+        ),
     )
     .await?;
     let api = ns.api::<GitImage>();
@@ -343,8 +341,12 @@ async fn failed_build_is_reported_and_rebuild_retries() -> anyhow::Result<()> {
     assert_eq!(
         build_jobs(&ns, "app").await?.len(),
         1,
-        "no automatic retry of a failing Dockerfile"
+        "no automatic retry of a failing build"
     );
+    let fix = serde_json::json!({ "stringData": { "token": "ok" } });
+    ns.api::<Secret>()
+        .patch("flag", &PatchParams::default(), &Patch::Merge(&fix))
+        .await?;
     let patch =
         serde_json::json!({ "metadata": { "annotations": { "gitimage.dev/rebuild": "1" } } });
     api.patch("app", &PatchParams::default(), &Patch::Merge(&patch))
@@ -353,7 +355,16 @@ async fn failed_build_is_reported_and_rebuild_retries() -> anyhow::Result<()> {
         Ok((build_jobs(&ns, "app").await?.len() >= 2).then_some(()))
     })
     .await?;
-    let _ = sha;
+    // The retry's success must be recorded: the old Failed record is gone from status.
+    let gi = wait_built(&ns, "app", &sha, BUILD).await?;
+    let st = gi.status.unwrap_or_default();
+    assert!(
+        st.builds.iter().all(|b| b.outcome != BuildOutcome::Failed),
+        "{:?}",
+        st.builds
+    );
+    assert!(st.condition("Failed").is_none_or(|c| c.status == "False"));
+    assert_eq!(build_jobs(&ns, "app").await?.len(), 2, "exactly one retry");
     Ok(())
 }
 
