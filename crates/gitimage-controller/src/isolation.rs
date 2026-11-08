@@ -9,7 +9,7 @@ use gitimage_api::Config;
 use gitimage_api::config::IsolationMode;
 use k8s_openapi::api::batch::v1::{Job, JobSpec};
 use k8s_openapi::api::core::v1::{
-    ConfigMap, Container, EmptyDirVolumeSource, Pod, PodSpec, PodTemplateSpec, Volume, VolumeMount,
+    ConfigMap, Container, Pod, PodSpec, PodTemplateSpec, Volume, VolumeMount,
 };
 use k8s_openapi::api::node::v1::RuntimeClass;
 use kube::api::{Api, DeleteParams, ListParams, LogParams, PostParams, PropagationPolicy};
@@ -40,7 +40,7 @@ pub fn check_job(cfg: &Config, ns: &str) -> Job {
         enable_service_links: Some(false),
         volumes: Some(vec![Volume {
             name: "buildkit-state".into(),
-            empty_dir: Some(EmptyDirVolumeSource::default()),
+            empty_dir: Some(crate::job::state_empty_dir(cfg)),
             ..Default::default()
         }]),
         ..Default::default()

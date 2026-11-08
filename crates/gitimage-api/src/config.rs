@@ -92,6 +92,11 @@ impl Config {
                     .into(),
             ));
         }
+        if !matches!(self.build.state_volume.medium.as_str(), "" | "Memory") {
+            return Err(ConfigError::Invalid(
+                "build.stateVolume.medium must be \"\" or \"Memory\"".into(),
+            ));
+        }
         match self.storage.kind {
             StorageType::Registry if self.storage.registry.is_none() => Err(ConfigError::Invalid(
                 "storage.registry is required for storage.type registry".into(),
@@ -292,6 +297,24 @@ pub struct BuildDefaults {
     /// plain-HTTP registries (`[registry."docker.io"] mirrors = ["mirror.example.com"]`).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub buildkitd_config: String,
+    /// Volume for BuildKit's state (snapshots, cache).
+    #[serde(default)]
+    pub state_volume: StateVolume,
+}
+
+/// Where BuildKit keeps its state during a build.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StateVolume {
+    /// `""` (node disk) or `Memory` (tmpfs). Use `Memory` on Kata nodes whose virtiofs shares
+    /// do not support extended attributes (e.g. Talos): BuildKit then fails with
+    /// "failed to create hash ...: operation not supported". Memory counts against the build
+    /// pod's memory limit, so size `build.defaultResources` accordingly.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub medium: String,
+    /// emptyDir sizeLimit, e.g. `6Gi`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size_limit: Option<String>,
 }
 
 impl Default for BuildDefaults {
@@ -306,6 +329,7 @@ impl Default for BuildDefaults {
             cache: CacheMode::default(),
             extra_opts: BTreeMap::new(),
             buildkitd_config: String::new(),
+            state_volume: StateVolume::default(),
         }
     }
 }

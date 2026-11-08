@@ -18,6 +18,7 @@
 | `build.platforms` | `[linux/amd64]` | more than one builds a multi-arch index |
 | `build.cache` | `max` | `max`, `min` or `off` |
 | `build.labels`, `build.extraOpts`, `build.defaultResources` | | applied to every build |
+| `build.stateVolume.medium`, `.sizeLimit` | `""` | `Memory` puts BuildKit's state on tmpfs (Kata on Talos) |
 | `build.buildkitdConfig` | `""` | appended to the build pods' `buildkitd.toml` (registry mirrors, private registries) |
 | `hooks.baseURL`, `hooks.ingress.*` | | push hooks |
 | `controller.replicas`, `webhook.replicas` | `2` | |

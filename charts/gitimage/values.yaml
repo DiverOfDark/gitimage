@@ -60,6 +60,12 @@ build:
   cache: max
   labels: {}
   extraOpts: {}
+  # BuildKit's state volume. medium: Memory (tmpfs) for Kata nodes whose virtiofs shares lack
+  # xattr support (Talos): builds otherwise fail with "failed to create hash ...: operation
+  # not supported". tmpfs counts against the build pod's memory: size defaultResources.
+  stateVolume:
+    medium: ""
+    sizeLimit: ""
   # Appended to the build pods' buildkitd.toml: registry mirrors, private/plain-HTTP registries.
   buildkitdConfig: ""
     # [registry."docker.io"]

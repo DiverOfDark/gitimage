@@ -38,6 +38,12 @@ either in place the kernel refuses the container's sysfs mount (`sysfs mount thr
 sys caused: operation not permitted`). CI always runs it (matrix `include`, independent of
 `E2E_ISOLATIONS`); the nodes need user namespaces enabled.
 
+**Kata on Talos (virtiofs without xattrs).** Kata shares pod volumes into the VM over
+virtiofs. When that share lacks extended-attribute support (Talos' Kata extension), BuildKit
+fails with `failed to create hash for ...: operation not supported`. Set
+`build.stateVolume.medium: Memory` (optionally `sizeLimit`) to keep BuildKit's state on tmpfs
+inside the VM, and give builds enough memory via `build.defaultResources`.
+
 **userns in kind.** runc cannot mount sysfs for a user-namespaced pod when the node itself is a
 container, so kind cannot test this mode; use it on VM or bare-metal nodes with Kubernetes 1.33+.
 

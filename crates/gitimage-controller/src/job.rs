@@ -249,6 +249,15 @@ fn resources(r: &Resources) -> Option<ResourceRequirements> {
     })
 }
 
+/// BuildKit's state volume (`build.stateVolume`): node disk, or tmpfs with `medium: Memory`.
+pub fn state_empty_dir(cfg: &Config) -> EmptyDirVolumeSource {
+    let sv = &cfg.build.state_volume;
+    EmptyDirVolumeSource {
+        medium: (!sv.medium.is_empty()).then(|| sv.medium.clone()),
+        size_limit: sv.size_limit.clone().map(Quantity),
+    }
+}
+
 /// Isolation fields for the build pod and the BuildKit container (design section 8).
 pub fn pod_overlay(cfg: &Config, pod: &mut PodSpec, buildkit: &mut Container) {
     let iso = &cfg.build_policy.isolation;
@@ -353,7 +362,7 @@ pub fn build_job(gi: &GitImage, cfg: &Config, p: &BuildParams) -> Job {
         },
         Volume {
             name: "buildkit-state".into(),
-            empty_dir: Some(EmptyDirVolumeSource::default()),
+            empty_dir: Some(state_empty_dir(cfg)),
             ..Default::default()
         },
         Volume {
@@ -849,6 +858,24 @@ build:
             .collect();
         assert!(mounts.contains(&"/var/lib/buildkit"));
         assert!(mounts.contains(&"/etc/buildkit/buildkitd.toml"));
+    }
+
+    #[test]
+    fn memory_state_volume() {
+        let mut cfg = config();
+        cfg.build.state_volume.medium = "Memory".into();
+        cfg.build.state_volume.size_limit = Some("6Gi".into());
+        let job = build_job(&gitimage(), &cfg, &params());
+        let vols = job.spec.unwrap().template.spec.unwrap().volumes.unwrap();
+        let state = vols
+            .iter()
+            .find(|v| v.name == "buildkit-state")
+            .unwrap()
+            .empty_dir
+            .clone()
+            .unwrap();
+        assert_eq!(state.medium.as_deref(), Some("Memory"));
+        assert_eq!(state.size_limit, Some(Quantity("6Gi".into())));
     }
 
     #[test]

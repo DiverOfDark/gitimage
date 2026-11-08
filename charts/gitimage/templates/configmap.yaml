@@ -61,6 +61,11 @@ data:
       extraOpts: {{ toJson .Values.build.extraOpts }}
       defaultResources: {{ toJson .Values.build.defaultResources }}
       buildkitdConfig: {{ .Values.build.buildkitdConfig | toJson }}
+      stateVolume:
+        medium: {{ .Values.build.stateVolume.medium | quote }}
+        {{- with .Values.build.stateVolume.sizeLimit }}
+        sizeLimit: {{ . | quote }}
+        {{- end }}
     network:
       clusterCIDRs: {{ toJson .Values.network.clusterCIDRs }}
     node:
