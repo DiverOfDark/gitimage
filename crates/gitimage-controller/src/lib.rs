@@ -15,6 +15,7 @@ pub mod push_auth;
 pub mod reconcile;
 pub mod roller;
 pub mod storage;
+pub mod ui;
 pub mod util;
 
 use std::net::SocketAddr;
@@ -51,6 +52,7 @@ pub struct Settings {
     pub push_addr: SocketAddr,
     pub hooks_addr: SocketAddr,
     pub ops_addr: SocketAddr,
+    pub ui_addr: SocketAddr,
 }
 
 fn reflect<K>(api: Api<K>, cfg: watcher::Config) -> Store<K>
@@ -193,6 +195,31 @@ pub async fn run(settings: Settings) -> anyhow::Result<()> {
             async move { s.cancelled().await },
         ))
     };
+    let ui = if config.ui.enabled {
+        // Its own watch: the gate releaser's store exists only on the leader.
+        let gated_pods = reflect(
+            Api::<k8s_openapi::api::core::v1::Pod>::all(client.clone()),
+            watcher::Config::default().labels(&format!("{}=true", keys::GATED_LABEL)),
+        );
+        let state = ui::UiState::new(
+            &config.ui,
+            client.clone(),
+            gitimages.clone(),
+            gated_pods,
+            build_jobs.clone(),
+            &keys.push_token_key,
+        )
+        .await?;
+        let s = shutdown.clone();
+        tracing::info!(addr = %settings.ui_addr, auth = ?config.ui.auth.mode, "serving the UI");
+        Some(tokio::spawn(gitimage_tls::serve_plain(
+            settings.ui_addr,
+            ui::router(state),
+            async move { s.cancelled().await },
+        )))
+    } else {
+        None
+    };
     {
         let (g, j, r) = (gitimages.clone(), build_jobs.clone(), ready.clone());
         let cert_file = settings.push_cert_dir.join("tls.crt");
@@ -287,6 +314,9 @@ pub async fn run(settings: Settings) -> anyhow::Result<()> {
         let _ = push.await;
         let _ = hooks.await;
         let _ = ops.await;
+        if let Some(ui) = ui {
+            let _ = ui.await;
+        }
     })
     .await;
     Ok(())

@@ -32,6 +32,67 @@ pub struct Config {
     pub hooks: Hooks,
     #[serde(default)]
     pub controller: ControllerSettings,
+    #[serde(default)]
+    pub ui: Ui,
+}
+
+/// The status UI served by the controller on its own port.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Ui {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Public URL of the UI, e.g. `https://gitimage.example.com`. Required for OIDC (the
+    /// redirect URI is `<baseURL>/auth/callback`).
+    #[serde(default, rename = "baseURL", skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+    #[serde(default)]
+    pub auth: UiAuth,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UiAuth {
+    #[serde(default)]
+    pub mode: UiAuthMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oidc: Option<UiOidc>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum UiAuthMode {
+    /// No login: every visitor sees what the controller's ServiceAccount sees. Only for
+    /// `kubectl port-forward` or a proxy that authenticates in front.
+    #[default]
+    None,
+    /// Login against an OIDC issuer the API server also trusts; every Kubernetes request the
+    /// UI makes carries the user's ID token, so cluster RBAC decides what they see.
+    Oidc,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UiOidc {
+    /// Issuer URL, exactly as in the API server's authentication configuration.
+    pub issuer: String,
+    /// Client id; must be one of the API server's accepted audiences. May instead come from
+    /// the `GITIMAGE_UI_OIDC_CLIENT_ID` environment variable.
+    #[serde(default, rename = "clientID", skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
+    #[serde(default = "default_oidc_scopes")]
+    pub scopes: Vec<String>,
+    /// ID token claim shown as the user name.
+    #[serde(default = "default_username_claim")]
+    pub username_claim: String,
+}
+
+fn default_oidc_scopes() -> Vec<String> {
+    vec!["openid".into(), "email".into(), "profile".into()]
+}
+
+fn default_username_claim() -> String {
+    "email".into()
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
@@ -120,6 +181,18 @@ impl Config {
             if !privileged {
                 return Err(ConfigError::Invalid(
                     "build.stateVolume.block needs isolation mode privileged or runtimeClass with privilegedInSandbox".into(),
+                ));
+            }
+        }
+        if self.ui.auth.mode == UiAuthMode::Oidc {
+            if self.ui.auth.oidc.is_none() {
+                return Err(ConfigError::Invalid(
+                    "ui.auth.oidc is required for ui.auth.mode oidc".into(),
+                ));
+            }
+            if self.ui.base_url.as_deref().is_none_or(str::is_empty) {
+                return Err(ConfigError::Invalid(
+                    "ui.baseURL is required for ui.auth.mode oidc".into(),
                 ));
             }
         }

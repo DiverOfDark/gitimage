@@ -20,6 +20,7 @@
 - [Storage modes](operations/storage.md)
 - [Helm values](operations/configuration.md)
 - [Security model](operations/security.md)
+- [Status UI](operations/ui.md)
 - [Troubleshooting](operations/troubleshooting.md)
 - [Example: Talos homelab](operations/homelab.md)
 

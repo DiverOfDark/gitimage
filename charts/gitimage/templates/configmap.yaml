@@ -82,3 +82,21 @@ data:
     {{- end }}
     controller:
       image: {{ include "gitimage.image" . | quote }}
+    {{- if .Values.ui.enabled }}
+    ui:
+      enabled: true
+      {{- with .Values.ui.baseURL }}
+      baseURL: {{ . | quote }}
+      {{- end }}
+      auth:
+        mode: {{ .Values.ui.auth.mode }}
+        {{- if eq .Values.ui.auth.mode "oidc" }}
+        oidc:
+          issuer: {{ required "ui.auth.oidc.issuer is required for ui.auth.mode oidc" .Values.ui.auth.oidc.issuer | quote }}
+          {{- with .Values.ui.auth.oidc.clientID }}
+          clientID: {{ . | quote }}
+          {{- end }}
+          scopes: {{ toJson .Values.ui.auth.oidc.scopes }}
+          usernameClaim: {{ .Values.ui.auth.oidc.usernameClaim | quote }}
+        {{- end }}
+    {{- end }}

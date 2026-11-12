@@ -1,0 +1,143 @@
+@import 'tailwindcss';
+
+/* Tokens follow the shadcn naming, so components read the same as shadcn-svelte ones. */
+:root {
+  --background: #f5f6f8;
+  --foreground: #18202b;
+  --card: #ffffff;
+  --muted: #eceff3;
+  --muted-foreground: #5a6676;
+  --border: #dce1e8;
+  --input: #c9d0da;
+  --primary: #1d3fbf;
+  --primary-foreground: #ffffff;
+  --ring: #1d3fbf;
+  --building: #9a5b00;
+  --building-soft: #fdf1d8;
+  --ready: #17724f;
+  --ready-soft: #def4ea;
+  --failed: #b3261e;
+  --failed-soft: #fde7e4;
+  --pending: #5a6676;
+  --pending-soft: #e8ebf0;
+  /* The log is a terminal in both themes. */
+  --log: #0f141b;
+  --log-raised: #19212c;
+  --log-line: #26303d;
+  --log-foreground: #d5dbe4;
+  --log-muted: #8492a5;
+  --radius: 0.5rem;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0f141a;
+    --foreground: #e4e8ee;
+    --card: #161d26;
+    --muted: #1e2732;
+    --muted-foreground: #93a0b1;
+    --border: #27313e;
+    --input: #36424f;
+    --primary: #8ea7ff;
+    --primary-foreground: #0d1430;
+    --ring: #8ea7ff;
+    --building: #f0b24a;
+    --building-soft: #3a2c10;
+    --ready: #4ccb9a;
+    --ready-soft: #12332a;
+    --failed: #ff8278;
+    --failed-soft: #3d1a17;
+    --pending: #93a0b1;
+    --pending-soft: #222c38;
+    --log: #0a0e13;
+    --log-raised: #141b24;
+    --log-line: #222b37;
+  }
+}
+
+@theme inline {
+  --font-sans: 'IBM Plex Sans', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-ring: var(--ring);
+  --color-building: var(--building);
+  --color-building-soft: var(--building-soft);
+  --color-ready: var(--ready);
+  --color-ready-soft: var(--ready-soft);
+  --color-failed: var(--failed);
+  --color-failed-soft: var(--failed-soft);
+  --color-pending: var(--pending);
+  --color-pending-soft: var(--pending-soft);
+  --color-log: var(--log);
+  --color-log-raised: var(--log-raised);
+  --color-log-line: var(--log-line);
+  --color-log-foreground: var(--log-foreground);
+  --color-log-muted: var(--log-muted);
+  --radius-sm: calc(var(--radius) - 2px);
+  --radius-md: var(--radius);
+  --radius-lg: calc(var(--radius) + 4px);
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+  html {
+    font-family: var(--font-sans);
+    background: var(--background);
+    color: var(--foreground);
+    -webkit-font-smoothing: antialiased;
+    font-feature-settings: 'tnum';
+  }
+  body {
+    min-height: 100vh;
+    font-size: 0.9375rem;
+    line-height: 1.5;
+  }
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+    border-radius: 3px;
+  }
+}
+
+/* A build in progress: the track segment carries a slow moving band. */
+@keyframes travel {
+  from {
+    background-position: 0 0;
+  }
+  to {
+    background-position: 24px 0;
+  }
+}
+.track-live {
+  background-image: repeating-linear-gradient(
+    90deg,
+    var(--building) 0 12px,
+    color-mix(in srgb, var(--building) 45%, transparent) 12px 24px
+  );
+  background-size: 24px 100%;
+  animation: travel 1.2s linear infinite;
+}
+@keyframes pulse-dot {
+  50% {
+    opacity: 0.35;
+  }
+}
+.live-dot {
+  animation: pulse-dot 1.4s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .track-live,
+  .live-dot {
+    animation: none;
+  }
+}

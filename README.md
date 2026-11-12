@@ -81,6 +81,7 @@ token scoped to `<namespace>/<gitimage>` that dies with the build Job.
 
 | Want | Do |
 | --- | --- |
+| See everything in a browser | `ui.enabled: true`, then `kubectl -n gitimage-system port-forward svc/gitimage-ui 8082`: live build logs, workloads, waiting pods; OIDC sign-in with cluster RBAC ([docs](https://diverofdark.github.io/gitimage/operations/ui.html)) |
 | Watch a build | `kubectl get gi` (columns: Revision, Ready, Status = current BuildKit step); waiting pods get `Building myapp@3f2c9e1: step 4/12 RUN npm ci` Events |
 | Private package registries | `build.secrets: [{ id: npmrc, secretRef: { name: npm-token } }]`, then `RUN --mount=type=secret,id=npmrc,target=/root/.npmrc npm ci` |
 | Build args | `build.args: { NODE_ENV: { value: production }, TOKEN: { valueFrom: { secretKeyRef: { name: t, key: k } } } }` |
@@ -95,7 +96,7 @@ token scoped to `<namespace>/<gitimage>` that dies with the build Job.
 
 | Namespace | Workload | Role |
 | --- | --- | --- |
-| `gitimage-system` | `gitimage-controller` (2 replicas, Lease) | reconciles GitImages, push endpoint (:5000), hooks (:8080), GC, gate release |
+| `gitimage-system` | `gitimage-controller` (2 replicas, Lease) | reconciles GitImages, push endpoint (:5000), hooks (:8080), status UI (:8082, optional), GC, gate release |
 | `gitimage-system` | `gitimage-webhook` (2 replicas) | admission: gates pods, injects digests, denies cross-tenant image refs |
 | `gitimage-system` | `gitimage-node` (DaemonSet, s3 mode only) | read-only OCI server on `127.0.0.1:25050` |
 | tenant namespaces | build Jobs, `gitimage-build` ConfigMap, `gitimage-build-egress` NetworkPolicy | one Job per commit; git credentials and build secrets stay here |

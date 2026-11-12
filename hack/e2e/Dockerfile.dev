@@ -1,12 +1,20 @@
 # Local e2e image: cached cargo build on bookworm (glibc 2.36), distroless runtime.
 # Workspace sources are touched before building: the target dir is a cache mount, and an
 # artifact newer than an edited file (edit during a build) would otherwise look fresh.
+FROM node:24-bookworm-slim AS ui
+WORKDIR /ui
+COPY ui/package.json ui/package-lock.json ./
+RUN --mount=type=cache,target=/root/.npm npm ci
+COPY ui/ ./
+RUN npm run build
+
 FROM rust:1.99-bookworm AS build
 WORKDIR /src
 COPY . .
+COPY --from=ui /ui/dist ui/dist
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
-    find crates -name '*.rs' -exec touch {} + && \
+    find crates -name '*.rs' -exec touch {} + && touch ui/dist/index.html && \
     cargo build --release -p gitimage && cp target/release/gitimage /gitimage
 
 FROM gcr.io/distroless/cc-debian13:nonroot
