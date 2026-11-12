@@ -168,7 +168,7 @@
   <div class="mt-5 grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_21rem]">
     <div class="min-w-0">
       {#if selected}
-        {#key `${selected}:${attempt}:${awaited}`}
+        {#key `${selected}:${attempt}`}
           <LogViewer {namespace} {name} revision={selected} wait={awaited} />
         {/key}
       {:else}

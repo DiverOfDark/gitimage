@@ -69,7 +69,8 @@
   }
 
   $effect(() => {
-    const url = `/api/gitimages/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/logs?revision=${revision}${wait ? '' : '&wait=false'}`;
+    const url = `/api/gitimages/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/logs?revision=${revision}${untrack(() => wait) ? '' : '&wait=false'}`;
+    // `wait` is read once: a build that finishes on screen keeps its log.
     void attempt;
     untrack(() => {
       rows = [];
