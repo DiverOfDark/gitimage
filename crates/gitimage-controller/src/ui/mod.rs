@@ -27,6 +27,7 @@ use k8s_openapi::api::apps::v1::{DaemonSet, Deployment, StatefulSet};
 use k8s_openapi::api::authorization::v1::{
     ResourceAttributes, SelfSubjectAccessReview, SelfSubjectAccessReviewSpec,
 };
+use k8s_openapi::api::batch::v1::Job;
 use k8s_openapi::api::core::v1::Pod;
 use kube::api::{Api, ListParams, PostParams};
 use kube::runtime::reflector::Store;
@@ -46,6 +47,8 @@ pub struct UiState {
     kube_config: kube::Config,
     pub gitimages: Store<GitImage>,
     pub gated_pods: Store<Pod>,
+    /// Build Jobs, to know which commit a running build is for.
+    pub build_jobs: Store<Job>,
     pub sealer: Sealer,
     pub oidc: Option<Oidc>,
     pub secure_cookies: bool,
@@ -61,6 +64,7 @@ impl UiState {
         client: Client,
         gitimages: Store<GitImage>,
         gated_pods: Store<Pod>,
+        build_jobs: Store<Job>,
         session_secret: &[u8],
     ) -> anyhow::Result<Arc<Self>> {
         let base_url = cfg.base_url.clone().unwrap_or_default();
@@ -87,6 +91,7 @@ impl UiState {
             kube_config: kube::Config::infer().await?,
             gitimages,
             gated_pods,
+            build_jobs,
             sealer: Sealer::new(session_secret),
             oidc,
             secure_cookies: base_url.starts_with("https://"),
@@ -186,6 +191,7 @@ async fn may_list(ui: &UiState, id: &Identity, ns: &str) -> Result<bool, kube::E
 async fn visible(ui: &UiState, id: &Identity) -> Result<Vec<GitImageView>, kube::Error> {
     let everything = may_list(ui, id, ALL_NAMESPACES).await?;
     let pods = ui.gated_pods.state();
+    let jobs = ui.build_jobs.state();
     let mut by_ns: HashMap<String, bool> = HashMap::new();
     let mut out = Vec::new();
     for gi in ui.gitimages.state() {
@@ -199,8 +205,10 @@ async fn visible(ui: &UiState, id: &Identity) -> Result<Vec<GitImageView>, kube:
             }
         };
         if allowed {
-            let gated = view::count_gated(&pods, &ns, &gi.name_any());
-            out.push(view::gitimage_view(&gi, gated, false));
+            let name = gi.name_any();
+            let gated = view::count_gated(&pods, &ns, &name);
+            let running = view::running_revision(&jobs, &ns, &name);
+            out.push(view::gitimage_view(&gi, gated, false, running));
         }
     }
     out.sort_by(|a, b| (&a.namespace, &a.name).cmp(&(&b.namespace, &b.name)));
@@ -258,6 +266,7 @@ async fn events(State(ui): State<Arc<UiState>>, Extension(id): Extension<Identit
 
 /// `GET /api/gitimages/{ns}/{name}`: read entirely with the caller's own permissions.
 async fn detail(
+    State(ui): State<Arc<UiState>>,
     Extension(id): Extension<Identity>,
     Path((ns, name)): Path<(String, String)>,
 ) -> Result<Json<Detail>, ApiError> {
@@ -310,7 +319,12 @@ async fn detail(
     gated_pods.sort_by(|a, b| a.created_at.cmp(&b.created_at));
 
     Ok(Json(Detail {
-        gitimage: view::gitimage_view(&gi, gated_pods.len(), true),
+        gitimage: view::gitimage_view(
+            &gi,
+            gated_pods.len(),
+            true,
+            view::running_revision(&ui.build_jobs.state(), &ns, &name),
+        ),
         workloads,
         gated_pods,
         warnings,

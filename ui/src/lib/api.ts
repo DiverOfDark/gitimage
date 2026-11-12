@@ -22,6 +22,8 @@ export interface GitImage {
   state: State;
   step?: string;
   buildingSince?: string;
+  /** Commit of the running build; can be older than latestRevision. */
+  buildingRevision?: string;
   failure?: { reason: string; message: string };
   revision?: string;
   latestRevision?: string;

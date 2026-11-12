@@ -4,6 +4,7 @@ use gitimage_api::gitimage::condition_types as cond;
 use gitimage_api::{BuildRecord, GitImage, keys};
 use gitimage_webhook::bindings;
 use k8s_openapi::api::apps::v1::{DaemonSet, Deployment, StatefulSet};
+use k8s_openapi::api::batch::v1::Job;
 use k8s_openapi::api::core::v1::{Pod, PodTemplateSpec};
 use kube::ResourceExt;
 use serde::Serialize;
@@ -46,6 +47,10 @@ pub struct GitImageView {
     pub step: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub building_since: Option<String>,
+    /// Commit of the running build. With `onNewCommit: wait` this can be older than
+    /// `latestRevision`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub building_revision: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub failure: Option<Failure>,
     /// Commit whose image pods get now.
@@ -72,7 +77,12 @@ fn step_of(message: &str) -> Option<String> {
     (!step.is_empty()).then(|| step.to_string())
 }
 
-pub fn gitimage_view(gi: &GitImage, gated_pods: usize, with_webhook_url: bool) -> GitImageView {
+pub fn gitimage_view(
+    gi: &GitImage,
+    gated_pods: usize,
+    with_webhook_url: bool,
+    running: Option<String>,
+) -> GitImageView {
     let status = gi.status.clone().unwrap_or_default();
     let is_true = |t: &str| status.condition(t).is_some_and(|c| c.status == "True");
     let building = status
@@ -100,6 +110,8 @@ pub fn gitimage_view(gi: &GitImage, gated_pods: usize, with_webhook_url: bool) -
         state,
         step: building.and_then(|c| step_of(&c.message)),
         building_since: building.map(|c| c.last_transition_time.clone()),
+        building_revision: building
+            .and_then(|_| running.or_else(|| status.latest_revision.clone())),
         failure: failed.map(|c| Failure {
             reason: c.reason.clone(),
             message: c.message.clone(),
@@ -117,6 +129,20 @@ pub fn gitimage_view(gi: &GitImage, gated_pods: usize, with_webhook_url: bool) -
         gated_pods,
         builds: status.builds,
     }
+}
+
+/// Commit of the newest unfinished build Job of GitImage `name` in `ns`.
+pub fn running_revision(jobs: &[std::sync::Arc<Job>], ns: &str, name: &str) -> Option<String> {
+    jobs.iter()
+        .filter(|j| j.namespace().as_deref() == Some(ns))
+        .filter(|j| j.labels().get(keys::NAME_LABEL).map(String::as_str) == Some(name))
+        .filter(|j| {
+            j.status
+                .as_ref()
+                .is_none_or(|s| s.succeeded.unwrap_or(0) == 0 && s.failed.unwrap_or(0) == 0)
+        })
+        .max_by_key(|j| j.metadata.creation_timestamp.clone())
+        .and_then(|j| j.labels().get(keys::REVISION_LABEL).cloned())
 }
 
 /// Gated pods in `ns` that wait for GitImage `name`.
@@ -339,6 +365,7 @@ conditions:
 "#),
             2,
             false,
+            None,
         );
         assert_eq!(v.state, State::Building);
         assert_eq!(v.step.as_deref(), Some("step 4/12 RUN npm ci"));
@@ -346,6 +373,43 @@ conditions:
         assert_eq!(v.gated_pods, 2);
         assert_eq!(v.url, "https://git.example.com/a/b.git");
         assert_eq!(v.webhook_url, None);
+    }
+
+    #[test]
+    fn the_running_build_can_be_older_than_the_newest_commit() {
+        let job = |name: &str, rev: &str, created: &str, status: &str| -> std::sync::Arc<Job> {
+            std::sync::Arc::new(
+                serde_saphyr::from_str(&format!(
+                    "metadata:\n  name: {name}\n  namespace: team-a\n  creationTimestamp: \"{created}\"\n  labels: {{ gitimage.dev/name: myapp, gitimage.dev/revision: {rev} }}\nstatus: {status}\n"
+                ))
+                .unwrap(),
+            )
+        };
+        let jobs = vec![
+            job(
+                "done",
+                "aaaaaaa",
+                "2026-01-01T00:00:00Z",
+                "{ succeeded: 1 }",
+            ),
+            job("run", "bbbbbbb", "2026-01-02T00:00:00Z", "{ active: 1 }"),
+        ];
+        let running = running_revision(&jobs, "team-a", "myapp");
+        assert_eq!(running.as_deref(), Some("bbbbbbb"));
+        assert_eq!(running_revision(&jobs, "team-b", "myapp"), None);
+        let g = gi(r#"
+latestRevision: ccccccc
+conditions:
+  - { type: Building, status: "True", reason: Started, message: "bbbbbbb: starting", lastTransitionTime: "2026-01-02T00:00:00Z" }
+"#);
+        let v = gitimage_view(&g, 0, false, running);
+        assert_eq!(v.building_revision.as_deref(), Some("bbbbbbb"));
+        // Without a Job in the cache yet, the newest commit is the best guess.
+        let v = gitimage_view(&g, 0, false, None);
+        assert_eq!(v.building_revision.as_deref(), Some("ccccccc"));
+        // Not building: no running revision.
+        let idle = gitimage_view(&gi("latestRevision: ccccccc"), 0, false, Some("x".into()));
+        assert_eq!(idle.building_revision, None);
     }
 
     #[test]
@@ -359,6 +423,7 @@ conditions:
 "#),
             0,
             true,
+            None,
         );
         assert_eq!(failed.state, State::Failed);
         assert_eq!(failed.failure.unwrap().reason, "BuildFailed");
@@ -370,9 +435,13 @@ conditions:
 "#),
             0,
             true,
+            None,
         );
         assert_eq!(ready.state, State::Ready);
-        assert_eq!(gitimage_view(&gi("{}"), 0, true).state, State::Pending);
+        assert_eq!(
+            gitimage_view(&gi("{}"), 0, true, None).state,
+            State::Pending
+        );
     }
 
     #[test]

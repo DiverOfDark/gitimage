@@ -206,6 +206,7 @@ pub async fn run(settings: Settings) -> anyhow::Result<()> {
             client.clone(),
             gitimages.clone(),
             gated_pods,
+            build_jobs.clone(),
             &keys.push_token_key,
         )
         .await?;

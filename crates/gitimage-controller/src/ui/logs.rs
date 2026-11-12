@@ -169,7 +169,7 @@ async fn run(id: Identity, ns: String, name: String, revision: String, tx: mpsc:
 
     for container in ["clone", "buildkit"] {
         // Wait until the container has logs to read.
-        loop {
+        let ran = loop {
             if id.expired() {
                 send!(
                     "end",
@@ -185,8 +185,8 @@ async fn run(id: Identity, ns: String, name: String, revision: String, tx: mpsc:
                 }
             };
             match container_state(&pod, container) {
-                ContainerState::Started => break,
-                ContainerState::Never => break,
+                ContainerState::Started => break true,
+                ContainerState::Never => break false,
                 ContainerState::Waiting(reason) => {
                     let detail = match reason {
                         Some(r) => format!("{container}: {r}"),
@@ -196,14 +196,29 @@ async fn run(id: Identity, ns: String, name: String, revision: String, tx: mpsc:
                     tokio::time::sleep(POLL).await;
                 }
             }
+        };
+        if !ran {
+            continue;
         }
         let lp = LogParams {
             container: Some(container.into()),
             follow: true,
             ..Default::default()
         };
-        let Ok(stream) = pods.log_stream(&pod_name, &lp).await else {
-            continue; // the container never ran
+        let stream = match pods.log_stream(&pod_name, &lp).await {
+            Ok(s) => s,
+            // An empty log must not pass for "nothing was printed".
+            Err(e) => {
+                let message = match &e {
+                    kube::Error::Api(s) if s.code == 403 => format!(
+                        "You may not read pod logs in {ns} (get on pods/log): {}",
+                        s.message
+                    ),
+                    other => format!("reading the log of {container}: {other}"),
+                };
+                send!("end", json!({ "phase": "Error", "message": message }));
+                return;
+            }
         };
         send!("status", json!({ "detail": "" }));
         let mut lines = stream.lines();

@@ -38,9 +38,16 @@
   });
 
   const gi = $derived(detail?.gitimage);
-  const inProgress = $derived(gi?.state === 'Building' ? gi.latestRevision : undefined);
+  const inProgress = $derived(gi?.state === 'Building' ? (gi.buildingRevision ?? gi.latestRevision) : undefined);
   /** The build whose log is shown: the one in the URL, else the running one, else the newest. */
   const selected = $derived(build ?? inProgress ?? gi?.builds[0]?.revision ?? gi?.latestRevision ?? null);
+  // A rebuild of the commit on screen starts a new build with the same sha: the log viewer
+  // must start over then, but not when that build merely finishes.
+  let startedAt = '';
+  const attempt = $derived.by(() => {
+    if (inProgress && inProgress === selected && gi?.buildingSince) startedAt = gi.buildingSince;
+    return startedAt;
+  });
   const step = $derived(parseStep(gi?.step));
   const upToDate = $derived(detail?.workloads.filter((w) => w.upToDate).length ?? 0);
   const rolled = $derived(
@@ -159,7 +166,7 @@
   <div class="mt-5 grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_21rem]">
     <div class="min-w-0">
       {#if selected}
-        {#key selected}
+        {#key `${selected}:${attempt}`}
           <LogViewer {namespace} {name} revision={selected} />
         {/key}
       {:else}
