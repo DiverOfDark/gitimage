@@ -4,7 +4,7 @@
 //! long as its pod exists.
 //!
 //! Events: `status` (waiting for the pod or a container), `text` (a plain line), `build`
-//! (BuildKit steps and their output), `end` (always last).
+//! (BuildKit steps, their output, and the layer work inside them), `end` (always last).
 
 use std::convert::Infallible;
 use std::time::Duration;
@@ -239,8 +239,11 @@ async fn run(id: Identity, ns: String, name: String, q: LogQuery, tx: mpsc::Send
                 continue;
             }
             match buildlog::parse_line(&line) {
-                Parsed::Build { steps, logs } => {
-                    send!("build", json!({ "steps": steps, "logs": logs }));
+                Parsed::Build { steps, logs, tasks } => {
+                    send!(
+                        "build",
+                        json!({ "steps": steps, "logs": logs, "tasks": tasks })
+                    );
                 }
                 Parsed::Text(text) => send!("text", json!({ "source": container, "text": text })),
                 Parsed::Nothing => {}
