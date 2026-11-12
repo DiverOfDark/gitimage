@@ -13,6 +13,8 @@ struct SolveStatus {
     vertexes: Vec<RawVertex>,
     #[serde(default)]
     logs: Vec<RawLog>,
+    #[serde(default)]
+    statuses: Vec<RawStatus>,
 }
 
 #[derive(Deserialize)]
@@ -35,6 +37,21 @@ struct RawLog {
     vertex: String,
     #[serde(default)]
     data: String,
+}
+
+#[derive(Deserialize)]
+struct RawStatus {
+    id: String,
+    #[serde(default)]
+    vertex: String,
+    #[serde(default)]
+    current: u64,
+    #[serde(default)]
+    total: u64,
+    #[serde(default)]
+    started: Option<String>,
+    #[serde(default)]
+    completed: Option<String>,
 }
 
 /// One build step as the UI shows it.
@@ -64,10 +81,31 @@ pub struct Chunk {
     pub text: String,
 }
 
+/// Work inside a step that prints nothing: a layer being downloaded or unpacked, an export.
+/// A step restored from the registry cache is only this, for as long as the layers take.
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Task {
+    pub step: String,
+    /// `extracting sha256:3c63…`; reported again with the same id as it advances.
+    pub id: String,
+    /// Bytes so far, of `total`; both 0 when BuildKit does not count.
+    pub current: u64,
+    pub total: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completed: Option<String>,
+}
+
 /// What one log line of the BuildKit container means.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Parsed {
-    Build { steps: Vec<Step>, logs: Vec<Chunk> },
+    Build {
+        steps: Vec<Step>,
+        logs: Vec<Chunk>,
+        tasks: Vec<Task>,
+    },
     Text(String),
     Nothing,
 }
@@ -108,10 +146,23 @@ pub fn parse_line(line: &str) -> Parsed {
             })
         })
         .collect();
-    if steps.is_empty() && logs.is_empty() {
+    let tasks: Vec<Task> = status
+        .statuses
+        .into_iter()
+        .filter(|t| !t.vertex.is_empty())
+        .map(|t| Task {
+            step: t.vertex,
+            id: t.id,
+            current: t.current,
+            total: t.total,
+            started: t.started,
+            completed: t.completed,
+        })
+        .collect();
+    if steps.is_empty() && logs.is_empty() && tasks.is_empty() {
         Parsed::Nothing
     } else {
-        Parsed::Build { steps, logs }
+        Parsed::Build { steps, logs, tasks }
     }
 }
 
@@ -155,13 +206,26 @@ mod tests {
     #[test]
     fn parses_steps_and_output() {
         let line = r#"{"vertexes":[{"digest":"sha256:a","name":"[2/3] RUN npm ci","started":"2026-01-01T00:00:00Z"}],"logs":[{"vertex":"sha256:a","stream":1,"data":"YWRkZWQgMTIgcGFja2FnZXMK","timestamp":"2026-01-01T00:00:01Z"}]}"#;
-        let Parsed::Build { steps, logs } = parse_line(line) else {
+        let Parsed::Build { steps, logs, .. } = parse_line(line) else {
             panic!("not a build line");
         };
         assert_eq!(steps[0].title, "step 2/3 RUN npm ci");
         assert!(!steps[0].internal && steps[0].completed.is_none());
         assert_eq!(logs[0].step, "sha256:a");
         assert_eq!(logs[0].text, "added 12 packages\n");
+    }
+
+    #[test]
+    fn parses_layer_progress() {
+        let line = r#"{"statuses":[{"id":"sha256:3c63","vertex":"sha256:a","current":1048576,"total":269702789,"timestamp":"t","started":"t0"},{"id":"extracting sha256:3c63","vertex":"sha256:a","name":"extracting","current":0,"timestamp":"t","started":"t0","completed":"t1"}]}"#;
+        let Parsed::Build { tasks, .. } = parse_line(line) else {
+            panic!("not a build line");
+        };
+        assert_eq!(tasks[0].step, "sha256:a");
+        assert_eq!((tasks[0].current, tasks[0].total), (1048576, 269702789));
+        assert!(tasks[0].completed.is_none());
+        assert_eq!(tasks[1].id, "extracting sha256:3c63");
+        assert_eq!(tasks[1].completed.as_deref(), Some("t1"));
     }
 
     #[test]

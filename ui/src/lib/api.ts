@@ -74,9 +74,20 @@ export interface Step {
   error?: string;
 }
 
+/** Work inside a step that prints nothing: a layer being downloaded or unpacked. */
+export interface Task {
+  step: string;
+  id: string;
+  current: number;
+  total: number;
+  started?: string;
+  completed?: string;
+}
+
 export interface BuildEvent {
   steps: Step[];
   logs: { step: string; text: string }[];
+  tasks?: Task[];
 }
 
 export class ApiError extends Error {

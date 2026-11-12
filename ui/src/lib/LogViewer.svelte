@@ -5,7 +5,7 @@
   import LoaderCircle from '@lucide/svelte/icons/loader-circle';
   import X from '@lucide/svelte/icons/x';
   import { tick, untrack } from 'svelte';
-  import { parseStep, type BuildEvent, type Step } from './api';
+  import { parseStep, type BuildEvent, type Step, type Task } from './api';
   import { clock, stopwatch } from './time.svelte';
 
   let {
@@ -18,7 +18,7 @@
   /** Keep the page responsive on very chatty steps: only the tail of a step's output is kept. */
   const MAX_CHARS = 400_000;
 
-  type Row = Step & { text: string; cut: boolean };
+  type Row = Step & { text: string; cut: boolean; tasks: Task[] };
   let rows = $state<Row[]>([]);
   let before = $state<string[]>([]); // clone output
   let after = $state<string[]>([]); // plain lines of the build container
@@ -49,13 +49,20 @@
       }
       // BuildKit reports steps as it reaches them; keep each stage together, in Dockerfile order.
       const { n, of } = parseStep(s.title);
-      const fresh = { ...s, text: '', cut: false };
+      const fresh = { ...s, text: '', cut: false, tasks: [] };
       const stage = (r: Row) => n !== undefined && parseStep(r.title).of === of;
       const later = rows.findIndex((r) => stage(r) && (parseStep(r.title).n ?? 0) > n!);
       const last = rows.reduce((at, r, i) => (stage(r) ? i : at), -1);
       if (later !== -1) rows.splice(later, 0, fresh);
       else if (last !== -1) rows.splice(last + 1, 0, fresh);
       else rows.push(fresh);
+    }
+    for (const t of ev.tasks ?? []) {
+      const row = rows.find((r) => r.id === t.step);
+      if (!row) continue;
+      const at = row.tasks.findIndex((x) => x.id === t.id);
+      if (at === -1) row.tasks.push(t);
+      else row.tasks[at] = t;
     }
     for (const l of ev.logs) {
       const row = rows.find((r) => r.id === l.step);
@@ -111,6 +118,18 @@
   const duration = (r: Row) =>
     r.started ? stopwatch((r.completed ? Date.parse(r.completed) : end ? Date.parse(r.started) : clock()) - Date.parse(r.started)) : '';
 
+  const hasBody = (r: Row) => !!r.text || !!r.error || r.tasks.length > 0;
+  /** `extracting sha256:3c63cf667d0e…` is a layer; twelve characters name it. */
+  const taskName = (t: Task) => t.id.replace(/sha256:([0-9a-f]{12})[0-9a-f]+/, '$1');
+  const mb = (n: number) => (n >= 1e9 ? `${(n / 1e9).toFixed(2)} GB` : n >= 1e6 ? `${(n / 1e6).toFixed(0)} MB` : `${Math.ceil(n / 1e3)} kB`);
+  /** Bytes while they are counted, the time taken otherwise. */
+  const taskState = (t: Task) => {
+    if (!t.completed && t.total > 0) return `${mb(t.current)} / ${mb(t.total)}`;
+    if (t.completed && t.total > 0) return mb(t.total);
+    if (!t.started) return '';
+    return stopwatch((t.completed ? Date.parse(t.completed) : end ? Date.parse(t.started) : clock()) - Date.parse(t.started));
+  };
+
   function onscroll() {
     if (!pane) return;
     follow = pane.scrollHeight - pane.scrollTop - pane.clientHeight < 40;
@@ -160,7 +179,7 @@
         <button
           type="button"
           aria-expanded={open}
-          disabled={!r.text && !r.error}
+          disabled={!hasBody(r)}
           onclick={() => (toggled[r.id] = !open)}
           class="flex w-full items-center gap-2.5 px-4 py-1.5 text-left enabled:hover:bg-log-raised {r.internal ? 'text-log-muted' : ''}"
         >
@@ -178,11 +197,21 @@
           {#if r.cached}<span class="shrink-0 text-log-muted">cached</span>{/if}
           <span class="w-12 shrink-0 text-right text-log-muted">{r.cached ? '' : duration(r)}</span>
           <ChevronRight
-            class="size-3.5 shrink-0 text-log-muted transition-transform {open ? 'rotate-90' : ''} {r.text || r.error ? '' : 'invisible'}"
+            class="size-3.5 shrink-0 text-log-muted transition-transform {open ? 'rotate-90' : ''} {hasBody(r) ? '' : 'invisible'}"
           />
         </button>
-        {#if open && (r.text || r.error)}
+        {#if open && hasBody(r)}
           <div class="bg-log-raised/60 py-2 pr-4 pl-[2.6rem]">
+            {#if r.tasks.length}
+              <ul class={r.text || r.error ? 'mb-2' : ''}>
+                {#each r.tasks as t (t.id)}
+                  <li class="flex gap-3 {t.completed || end ? 'text-log-muted' : ''}">
+                    <span class="min-w-0 flex-1 truncate">{taskName(t)}</span>
+                    <span class="shrink-0 tabular-nums">{taskState(t)}</span>
+                  </li>
+                {/each}
+              </ul>
+            {/if}
             {#if r.cut}<p class="mb-1 text-log-muted">Earlier output of this step is not shown.</p>{/if}
             {#if r.text}<pre class="break-words whitespace-pre-wrap">{r.text}</pre>{/if}
             {#if r.error}<pre class="mt-1 break-words whitespace-pre-wrap {failed(r) ? 'text-[#ff8278]' : 'text-log-muted'}">{r.error}</pre>{/if}
