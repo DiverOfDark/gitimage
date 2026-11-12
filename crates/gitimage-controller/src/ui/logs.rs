@@ -31,6 +31,13 @@ const POD_WAIT: Duration = Duration::from_secs(90);
 #[derive(Deserialize)]
 pub struct LogQuery {
     revision: String,
+    /// `false` for a build that already ended: its pod exists now or never will again.
+    #[serde(default = "yes")]
+    wait: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 /// Label values only: nothing here may change the meaning of the selector.
@@ -110,7 +117,8 @@ fn failure_of(pod: &Pod) -> Option<String> {
         })
 }
 
-async fn run(id: Identity, ns: String, name: String, revision: String, tx: mpsc::Sender<Event>) {
+async fn run(id: Identity, ns: String, name: String, q: LogQuery, tx: mpsc::Sender<Event>) {
+    let LogQuery { revision, wait } = q;
     macro_rules! send {
         ($name:expr, $data:expr) => {
             if tx.send(event($name, $data)).await.is_err() {
@@ -153,7 +161,7 @@ async fn run(id: Identity, ns: String, name: String, revision: String, tx: mpsc:
                 return;
             }
         }
-        if started.elapsed() >= POD_WAIT {
+        if !wait || started.elapsed() >= POD_WAIT {
             send!(
                 "end",
                 json!({
@@ -272,7 +280,7 @@ pub async fn stream(
     Query(q): Query<LogQuery>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let (tx, mut rx) = mpsc::channel::<Event>(256);
-    tokio::spawn(run(id, ns, name, q.revision, tx));
+    tokio::spawn(run(id, ns, name, q, tx));
     let stream = futures::stream::poll_fn(move |cx| rx.poll_recv(cx).map(|e| e.map(Ok)));
     Sse::new(stream).keep_alive(KeepAlive::default())
 }

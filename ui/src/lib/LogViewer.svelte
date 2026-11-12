@@ -8,7 +8,12 @@
   import { parseStep, type BuildEvent, type Step } from './api';
   import { clock, stopwatch } from './time.svelte';
 
-  let { namespace, name, revision }: { namespace: string; name: string; revision: string } = $props();
+  let {
+    namespace,
+    name,
+    revision,
+    wait = true,
+  }: { namespace: string; name: string; revision: string; /** false for a build that already ended */ wait?: boolean } = $props();
 
   /** Keep the page responsive on very chatty steps: only the tail of a step's output is kept. */
   const MAX_CHARS = 400_000;
@@ -59,7 +64,7 @@
   }
 
   $effect(() => {
-    const url = `/api/gitimages/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/logs?revision=${revision}`;
+    const url = `/api/gitimages/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/logs?revision=${revision}${wait ? '' : '&wait=false'}`;
     void attempt;
     untrack(() => {
       rows = [];
