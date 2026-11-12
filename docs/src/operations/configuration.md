@@ -22,6 +22,7 @@
 | `build.stateVolume.block` | unset | `{storageClassName, size, fsType: ext4\|ext3, formatImage}`: raw block ephemeral PVC per build, formatted and mounted in the pod (Kata on Talos) |
 | `build.buildkitdConfig` | `""` | appended to the build pods' `buildkitd.toml` (registry mirrors, private registries) |
 | `hooks.baseURL`, `hooks.ingress.*` | | push hooks |
+| `ui.enabled`, `ui.baseURL`, `ui.auth.*`, `ui.ingress.*` | `false` | [status UI](ui.md) on port 8082; `ui.auth.mode` is `none` or `oidc` |
 | `controller.replicas`, `webhook.replicas` | `2` | |
 | `controller.extraEnv` | `[]` | extra env for the controller |
 | `node.port`, `node.healthPort` | `25050`, `25051` | gitimage-node host ports |

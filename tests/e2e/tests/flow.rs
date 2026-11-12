@@ -584,3 +584,97 @@ async fn baseline_isolation_builds_under_baseline() -> anyhow::Result<()> {
     wait_built(&ns, "app", &sha, BUILD).await?;
     Ok(())
 }
+
+/// The status UI (`ui.enabled`, auth mode none): the list knows waiting pods, the detail view
+/// knows the workload, and the log endpoint replays BuildKit's steps with their output.
+#[tokio::test]
+#[ignore]
+async fn ui_shows_status_workloads_and_build_log() -> anyhow::Result<()> {
+    const UI: &str = "http://gitimage-ui.gitimage-system.svc:8082";
+    let client = client().await?;
+    let ns = TestNs::new(&client, "e2e-ui").await?;
+    let gitea = Gitea::default();
+    let repo = unique("ui");
+    gitea.create_repo(&repo, false).await?;
+    // Slow enough to be observed while building; prints a line the log must carry.
+    let dockerfile = "FROM docker.io/library/busybox:1.37\nRUN sleep 25 && echo ui-log-marker-7391\nCMD [\"sleep\", \"3600\"]\n";
+    let sha = gitea
+        .commit(&repo, "main", &[("Dockerfile", dockerfile)], "ui")
+        .await?;
+
+    create_deployment(&ns, "web", "app").await?;
+    wait_for("gated pod", Duration::from_secs(60), || async {
+        let pods = ns.api::<Pod>().list(&Default::default()).await?;
+        Ok(pods.items.into_iter().find(|p| {
+            p.spec
+                .as_ref()
+                .and_then(|s| s.scheduling_gates.as_ref())
+                .is_some_and(|g| g.iter().any(|g| g.name == "gitimage.dev/build"))
+        }))
+    })
+    .await?;
+    create_gitimage(
+        &ns,
+        "app",
+        &format!("url: {}\ninterval: 1h", Gitea::https_url(&repo)),
+    )
+    .await?;
+
+    let during = run_pod(
+        &ns,
+        "ui-during",
+        &format!(
+            "sleep 3; wget -q -O- {UI}/api/gitimages; echo; wget -q -O- {UI}/api/gitimages/{}/app; echo; wget -q -O- {UI}/ ",
+            ns.name
+        ),
+    )
+    .await?;
+    let mut lines = during.lines();
+    let list: serde_json::Value = serde_json::from_str(lines.next().unwrap_or_default())?;
+    let mine = list
+        .as_array()
+        .and_then(|a| a.iter().find(|g| g["namespace"] == ns.name.as_str()))
+        .unwrap_or_else(|| panic!("GitImage missing from the list: {during}"));
+    assert_eq!(mine["name"], "app");
+    assert_eq!(mine["gatedPods"], 1, "{mine}");
+    assert!(
+        mine.get("webhookURL").is_none(),
+        "the list must not carry hook tokens"
+    );
+    let detail: serde_json::Value = serde_json::from_str(lines.next().unwrap_or_default())?;
+    assert_eq!(detail["workloads"][0]["name"], "web", "{detail}");
+    assert_eq!(detail["workloads"][0]["kind"], "Deployment");
+    assert_eq!(
+        detail["gatedPods"].as_array().map(Vec::len),
+        Some(1),
+        "{detail}"
+    );
+    assert_eq!(
+        detail["warnings"].as_array().map(Vec::len),
+        Some(0),
+        "{detail}"
+    );
+    assert!(
+        during.contains("<div id=\"app\">"),
+        "the web app is not embedded: {during}"
+    );
+
+    wait_built(&ns, "app", &sha, BUILD).await?;
+    let log = run_pod(
+        &ns,
+        "ui-log",
+        &format!(
+            "wget -q -O- '{UI}/api/gitimages/{}/app/logs?revision={sha}'; echo; wget -q -O- {UI}/api/gitimages/{}/app",
+            ns.name, ns.name
+        ),
+    )
+    .await?;
+    assert!(log.contains("event: build"), "{log}");
+    assert!(log.contains("RUN sleep 25"), "step titles: {log}");
+    assert!(log.contains("ui-log-marker-7391"), "step output: {log}");
+    assert!(log.contains("event: end"), "{log}");
+    assert!(log.contains("\"phase\":\"Succeeded\""), "{log}");
+    let after: serde_json::Value = serde_json::from_str(log.lines().last().unwrap_or_default())?;
+    assert_eq!(after["gitimage"]["state"], "Ready", "{after}");
+    Ok(())
+}

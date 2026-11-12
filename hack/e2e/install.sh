@@ -18,6 +18,7 @@ args=(--set image.repository=gitimage --set image.tag=e2e --set image.pullPolicy
       --set hooks.baseURL=http://gitimage-hooks.$NS.svc:8080
       --set 'network.clusterCIDRs={10.244.0.0/16,10.96.0.0/12}'
       --set build.activeDeadline=15m
+      --set ui.enabled=true
       --set 'controller.extraEnv[0].name=GITIMAGE_GC_INTERVAL' --set 'controller.extraEnv[0].value=20s')
 case "$ISOLATION" in
   privileged) args+=(--set buildPolicy.isolation.mode=privileged --set buildPolicy.isolation.allowPrivileged=true) ;;

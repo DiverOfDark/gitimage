@@ -1,5 +1,13 @@
 # syntax=docker/dockerfile:1.10
 # Build: cargo-chef on rust:bookworm (glibc 2.36), run: distroless/cc (glibc, libgcc, no shell).
+# The web UI is built first and embedded into the binary by crates/gitimage-controller/build.rs.
+FROM node:24-bookworm-slim AS ui
+WORKDIR /ui
+COPY ui/package.json ui/package-lock.json ./
+RUN npm ci
+COPY ui/ ./
+RUN npm run build
+
 FROM rust:1.99-bookworm AS chef
 RUN cargo install cargo-chef --locked
 WORKDIR /src
@@ -12,6 +20,7 @@ FROM chef AS builder
 COPY --from=planner /src/recipe.json recipe.json
 RUN cargo chef cook --release --recipe-path recipe.json -p gitimage
 COPY . .
+COPY --from=ui /ui/dist ui/dist
 RUN cargo build --release -p gitimage && cp target/release/gitimage /gitimage
 
 FROM gcr.io/distroless/cc-debian13:nonroot

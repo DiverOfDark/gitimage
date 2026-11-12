@@ -30,6 +30,12 @@ spec:
             {{- include "gitimage.logArgs" . | nindent 12 }}
           env:
             {{- include "gitimage.podEnv" . | nindent 12 }}
+            {{- if and .Values.ui.enabled (eq .Values.ui.auth.mode "oidc") .Values.ui.auth.oidc.existingSecret }}
+            - name: GITIMAGE_UI_OIDC_CLIENT_ID
+              valueFrom: { secretKeyRef: { name: {{ .Values.ui.auth.oidc.existingSecret | quote }}, key: clientID, optional: true } }
+            - name: GITIMAGE_UI_OIDC_CLIENT_SECRET
+              valueFrom: { secretKeyRef: { name: {{ .Values.ui.auth.oidc.existingSecret | quote }}, key: clientSecret, optional: true } }
+            {{- end }}
             {{- with .Values.controller.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -37,6 +43,9 @@ spec:
             - { name: push, containerPort: 5000 }
             - { name: hooks, containerPort: 8080 }
             - { name: ops, containerPort: 8081 }
+            {{- if .Values.ui.enabled }}
+            - { name: ui, containerPort: 8082 }
+            {{- end }}
           readinessProbe:
             httpGet: { path: /readyz, port: ops }
             periodSeconds: 5
@@ -113,6 +122,44 @@ spec:
     app.kubernetes.io/component: controller
   ports:
     - { name: ops, port: 8081, targetPort: ops }
+{{- if .Values.ui.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gitimage-ui
+  labels: {{- include "gitimage.labels" . | nindent 4 }}
+spec:
+  selector: {{- include "gitimage.selector" . | nindent 4 }}
+    app.kubernetes.io/component: controller
+  ports:
+    - { name: ui, port: 8082, targetPort: ui }
+{{- if .Values.ui.ingress.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: gitimage-ui
+  labels: {{- include "gitimage.labels" . | nindent 4 }}
+  {{- with .Values.ui.ingress.annotations }}
+  annotations: {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.ui.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  rules:
+    - host: {{ required "ui.ingress.host is required" .Values.ui.ingress.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend: { service: { name: gitimage-ui, port: { name: ui } } }
+  {{- with .Values.ui.ingress.tls }}
+  tls: {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end }}
+{{- end }}
 {{- if .Values.hooks.ingress.enabled }}
 ---
 apiVersion: networking.k8s.io/v1

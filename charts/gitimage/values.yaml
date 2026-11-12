@@ -125,6 +125,37 @@ hooks:
     annotations: {}
     tls: []
 
+# Read-only status UI served by the controller on port 8082: every GitImage, live build logs,
+# the workloads using an image and the pods waiting for one.
+ui:
+  enabled: false
+  # Public URL of the UI, e.g. https://gitimage.example.com. Required for auth.mode oidc.
+  baseURL: ""
+  auth:
+    # none: no login; every visitor sees what the controller's ServiceAccount sees. Use only
+    #       with `kubectl port-forward svc/gitimage-ui 8082` or behind an authenticating proxy.
+    # oidc: login against an issuer that the Kubernetes API server also trusts. The UI sends
+    #       the user's ID token to the API server, so cluster RBAC decides what they see.
+    mode: none
+    oidc:
+      # Exactly as in the API server's authentication configuration.
+      issuer: ""
+      # Must be one of the API server's accepted audiences. Register
+      # <baseURL>/auth/callback as a redirect URI of this client.
+      clientID: ""
+      # Secret in the release namespace with the keys `clientSecret` (omit for a public
+      # PKCE client) and optionally `clientID` (overrides the value above).
+      existingSecret: ""
+      scopes: [openid, email, profile]
+      # ID token claim shown as the user name.
+      usernameClaim: email
+  ingress:
+    enabled: false
+    className: ""
+    host: ""
+    annotations: {}
+    tls: []
+
 podMonitor:
   enabled: false
 

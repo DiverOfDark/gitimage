@@ -90,6 +90,9 @@ struct ControllerArgs {
     hooks_addr: SocketAddr,
     #[arg(long, default_value = "0.0.0.0:8081")]
     ops_addr: SocketAddr,
+    /// The status UI; served only with `ui.enabled` in the config.
+    #[arg(long, default_value = "0.0.0.0:8082")]
+    ui_addr: SocketAddr,
 }
 
 #[derive(Args)]
@@ -203,6 +206,7 @@ async fn main() -> anyhow::Result<()> {
                 push_addr: a.push_addr,
                 hooks_addr: a.hooks_addr,
                 ops_addr: a.ops_addr,
+                ui_addr: a.ui_addr,
             })
             .await
         }
