@@ -48,6 +48,8 @@
     if (inProgress && inProgress === selected && gi?.buildingSince) startedAt = gi.buildingSince;
     return startedAt;
   });
+  // A build that already ended has its pod now or never again: do not wait for one.
+  const awaited = $derived(selected === inProgress || !gi?.builds.some((b) => b.revision === selected));
   const step = $derived(parseStep(gi?.step));
   const upToDate = $derived(detail?.workloads.filter((w) => w.upToDate).length ?? 0);
   const rolled = $derived(
@@ -167,7 +169,7 @@
     <div class="min-w-0">
       {#if selected}
         {#key `${selected}:${attempt}`}
-          <LogViewer {namespace} {name} revision={selected} />
+          <LogViewer {namespace} {name} revision={selected} wait={awaited} />
         {/key}
       {:else}
         <div class="rounded-lg border bg-card px-6 py-16 text-center text-muted-foreground">

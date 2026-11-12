@@ -8,7 +8,12 @@
   import { parseStep, type BuildEvent, type Step } from './api';
   import { clock, stopwatch } from './time.svelte';
 
-  let { namespace, name, revision }: { namespace: string; name: string; revision: string } = $props();
+  let {
+    namespace,
+    name,
+    revision,
+    wait = true,
+  }: { namespace: string; name: string; revision: string; /** false for a build that already ended */ wait?: boolean } = $props();
 
   /** Keep the page responsive on very chatty steps: only the tail of a step's output is kept. */
   const MAX_CHARS = 400_000;
@@ -37,15 +42,20 @@
     for (const s of ev.steps) {
       const row = rows.find((r) => r.id === s.id);
       if (row) {
-        Object.assign(row, { ...s, started: s.started ?? row.started });
+        // BuildKit starts one step several times (cache lookup, then the real run): the newest
+        // report says whether it runs now, the first start says how long it has taken.
+        Object.assign(row, { ...s, started: row.started ?? s.started, completed: s.completed, error: s.error });
         continue;
       }
-      // BuildKit reports steps as it reaches them; keep Dockerfile steps in Dockerfile order.
-      const n = parseStep(s.title).n;
-      const at = n === undefined ? -1 : rows.findIndex((r) => (parseStep(r.title).n ?? 0) > n);
+      // BuildKit reports steps as it reaches them; keep each stage together, in Dockerfile order.
+      const { n, of } = parseStep(s.title);
       const fresh = { ...s, text: '', cut: false };
-      if (at === -1) rows.push(fresh);
-      else rows.splice(at, 0, fresh);
+      const stage = (r: Row) => n !== undefined && parseStep(r.title).of === of;
+      const later = rows.findIndex((r) => stage(r) && (parseStep(r.title).n ?? 0) > n!);
+      const last = rows.reduce((at, r, i) => (stage(r) ? i : at), -1);
+      if (later !== -1) rows.splice(later, 0, fresh);
+      else if (last !== -1) rows.splice(last + 1, 0, fresh);
+      else rows.push(fresh);
     }
     for (const l of ev.logs) {
       const row = rows.find((r) => r.id === l.step);
@@ -59,7 +69,8 @@
   }
 
   $effect(() => {
-    const url = `/api/gitimages/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/logs?revision=${revision}`;
+    const url = `/api/gitimages/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/logs?revision=${revision}${untrack(() => wait) ? '' : '&wait=false'}`;
+    // `wait` is read once: a build that finishes on screen keeps its log.
     void attempt;
     untrack(() => {
       rows = [];
