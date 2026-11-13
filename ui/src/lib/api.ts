@@ -67,6 +67,8 @@ export interface Me {
 export interface Step {
   id: string;
   title: string;
+  /** The Dockerfile stage of a numbered step. */
+  stage?: string;
   internal: boolean;
   started?: string;
   completed?: string;

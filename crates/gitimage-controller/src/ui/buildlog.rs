@@ -62,6 +62,9 @@ pub struct Step {
     pub id: String,
     /// `step 4/12 RUN npm ci`
     pub title: String,
+    /// The Dockerfile stage of a numbered step: `builder`, or `stage-1` for an unnamed one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stage: Option<String>,
     /// BuildKit's own bookkeeping (`[internal] load build definition`).
     pub internal: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -125,6 +128,7 @@ pub fn parse_line(line: &str) -> Parsed {
         .map(|v| Step {
             internal: v.name.trim_start().starts_with("[internal]"),
             title: humanize(&v.name),
+            stage: stage_of(&v.name),
             id: v.digest,
             started: v.started,
             completed: v.completed,
@@ -164,6 +168,18 @@ pub fn parse_line(line: &str) -> Parsed {
     } else {
         Parsed::Build { steps, logs, tasks }
     }
+}
+
+/// `[builder 4/9] RUN cargo build` → `builder`. Platform builds say `[linux/amd64 builder 4/9]`.
+fn stage_of(name: &str) -> Option<String> {
+    let bracket = name.trim().strip_prefix('[')?.split_once(']')?.0;
+    let mut words = bracket.split_whitespace().rev();
+    let step = words.next()?;
+    let numbered = step.split_once('/').is_some_and(|(n, of)| {
+        !n.is_empty() && !of.is_empty() && (n.to_owned() + of).chars().all(|c| c.is_ascii_digit())
+    });
+    let stage = words.next()?;
+    numbered.then(|| stage.to_string())
 }
 
 /// `gitimage clone` logs JSON lines (fields flattened, or nested under `fields`); show
@@ -210,6 +226,7 @@ mod tests {
             panic!("not a build line");
         };
         assert_eq!(steps[0].title, "step 2/3 RUN npm ci");
+        assert_eq!(steps[0].stage, None);
         assert!(!steps[0].internal && steps[0].completed.is_none());
         assert_eq!(logs[0].step, "sha256:a");
         assert_eq!(logs[0].text, "added 12 packages\n");
@@ -237,6 +254,26 @@ mod tests {
         assert!(steps[0].internal);
         assert!(steps[1].cached);
         assert_eq!(steps[2].error.as_deref(), Some("exit code: 1"));
+    }
+
+    #[test]
+    fn names_the_stage_of_a_step() {
+        assert_eq!(
+            stage_of("[builder 4/9] RUN cargo build").as_deref(),
+            Some("builder")
+        );
+        assert_eq!(
+            stage_of("[stage-1 1/2] FROM alpine").as_deref(),
+            Some("stage-1")
+        );
+        assert_eq!(
+            stage_of("[linux/amd64 builder 4/9] RUN cargo build").as_deref(),
+            Some("builder")
+        );
+        assert_eq!(stage_of("[2/3] RUN npm ci"), None);
+        assert_eq!(stage_of("[internal] load build definition"), None);
+        assert_eq!(stage_of("[auth] sharing credentials for r.example"), None);
+        assert_eq!(stage_of("exporting to image"), None);
     }
 
     #[test]

@@ -50,7 +50,8 @@
       // BuildKit reports steps as it reaches them; keep each stage together, in Dockerfile order.
       const { n, of } = parseStep(s.title);
       const fresh = { ...s, text: '', cut: false, tasks: [] };
-      const stage = (r: Row) => n !== undefined && parseStep(r.title).of === of;
+      // Two stages may have as many steps as each other; the name tells them apart.
+      const stage = (r: Row) => n !== undefined && r.stage === s.stage && parseStep(r.title).of === of;
       const later = rows.findIndex((r) => stage(r) && (parseStep(r.title).n ?? 0) > n!);
       const last = rows.reduce((at, r, i) => (stage(r) ? i : at), -1);
       if (later !== -1) rows.splice(later, 0, fresh);
@@ -130,6 +131,9 @@
     return stopwatch((t.completed ? Date.parse(t.completed) : end ? Date.parse(t.started) : clock()) - Date.parse(t.started));
   };
 
+  /** Stage names matter only when the Dockerfile has more than one. */
+  const staged = $derived(new Set(rows.map((r) => r.stage).filter(Boolean)).size > 1);
+
   function onscroll() {
     if (!pane) return;
     follow = pane.scrollHeight - pane.scrollTop - pane.clientHeight < 40;
@@ -172,9 +176,14 @@
       <pre class="border-b border-log-line px-4 py-2.5 whitespace-pre-wrap text-log-muted">{before.join('\n')}</pre>
     {/if}
 
-    {#each rows as r (r.id)}
+    {#each rows as r, i (r.id)}
       {@const s = parseStep(r.title)}
       {@const open = isOpen(r)}
+      {#if staged && r.stage && r.stage !== rows[i - 1]?.stage}
+        <h3 class="border-b border-log-line/60 bg-log-raised/40 px-4 py-1 text-xs tracking-wide text-log-muted">
+          Stage <span class="text-log-foreground">{r.stage}</span>
+        </h3>
+      {/if}
       <div class="border-b border-log-line/60">
         <button
           type="button"
