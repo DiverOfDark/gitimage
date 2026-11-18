@@ -25,8 +25,9 @@ use crate::job::{self, BuildParams};
 use crate::util::{self, now_rfc3339, set_condition};
 use crate::{namespace_setup, roller};
 
-/// Records kept in status (the newest `KEEP_BUILDS` with digests are protected by GC).
-const MAX_RECORDS: usize = 10;
+/// Records kept in status. Matches GC's `KEEP_BUILDS`, so every listed build that has a digest
+/// still has its image (the UI says "the last five builds are kept").
+const MAX_RECORDS: usize = crate::gc::KEEP_BUILDS;
 /// Pod-level failures (eviction, node loss) retried per commit.
 const MAX_ATTEMPTS: u32 = 2;
 /// How long a ref resolution is reused for reconciles not caused by time or hooks.
