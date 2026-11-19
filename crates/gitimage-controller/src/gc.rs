@@ -54,6 +54,46 @@ pub fn unrecorded(
     candidates.filter(|r| status.record(r).is_none()).collect()
 }
 
+/// Revisions whose tag may be pushed but not recorded yet: the newest commit, and each build
+/// Job (revision, finished at in unix seconds, `None` while running) that is still running or
+/// finished no earlier than the newest record. A Job that finished before the newest record is
+/// an old build whose record status already dropped (status keeps `KEEP_BUILDS` records, Jobs
+/// live an hour), so it gets the keep-newest rule like any other old build.
+pub fn in_flight(
+    status: &gitimage_api::GitImageStatus,
+    jobs: impl Iterator<Item = (String, Option<i64>)>,
+) -> Vec<String> {
+    let newest = status
+        .builds
+        .iter()
+        .filter_map(|b| chrono::DateTime::parse_from_rfc3339(&b.finished_at).ok())
+        .map(|t| t.timestamp())
+        .max();
+    let candidates = jobs
+        .filter(|(_, finished)| match (finished, newest) {
+            (Some(f), Some(n)) => *f >= n,
+            _ => true,
+        })
+        .map(|(revision, _)| revision)
+        .chain(status.latest_revision.clone());
+    unrecorded(status, candidates)
+}
+
+/// When a Job completed or failed, in unix seconds. `None` while it runs (or if the API server
+/// gave no time), which `in_flight` treats as running.
+fn job_finished_at(job: &Job) -> Option<i64> {
+    let st = job.status.as_ref()?;
+    if let Some(t) = &st.completion_time {
+        return Some(t.0.as_second());
+    }
+    st.conditions
+        .iter()
+        .flatten()
+        .find(|c| (c.type_ == "Complete" || c.type_ == "Failed") && c.status == "True")
+        .and_then(|c| c.last_transition_time.as_ref())
+        .map(|t| t.0.as_second())
+}
+
 /// Digests of `<pull_host>/<ns>/<name>@sha256:...` images that pods currently run.
 pub fn digests_in_use(pods: &[Pod], prefix: &str) -> HashSet<String> {
     let mut out = HashSet::new();
@@ -144,30 +184,26 @@ pub async fn collect(ctx: &Ctx, gi: &GitImage, pods: &[Pod]) -> anyhow::Result<u
             roots.push(d);
         }
     }
-    // Revisions in flight: a build Job exists (or it is the newest commit) but status has no
-    // record yet, so its tag may be pushed and not yet recorded. Once recorded, the
-    // keep-newest-5 rule applies.
+    // Revisions in flight: their tag may be pushed and not yet recorded (see `in_flight`).
+    // Once recorded, the keep-newest-5 rule applies.
     let jobs: Api<Job> = Api::namespaced(ctx.client.clone(), &ns);
     let lp = ListParams::default().labels(&format!("{}={}", gitimage_api::keys::NAME_LABEL, name));
-    let job_revisions: Vec<String> = jobs
+    let job_revisions: Vec<(String, Option<i64>)> = jobs
         .list(&lp)
         .await?
         .items
         .iter()
         .filter_map(|j| {
-            j.metadata
+            let revision = j
+                .metadata
                 .labels
                 .as_ref()?
-                .get(gitimage_api::keys::REVISION_LABEL)
-                .cloned()
+                .get(gitimage_api::keys::REVISION_LABEL)?
+                .clone();
+            Some((revision, job_finished_at(j)))
         })
         .collect();
-    let in_flight = unrecorded(
-        &status,
-        job_revisions
-            .into_iter()
-            .chain(status.latest_revision.clone()),
-    );
+    let in_flight = in_flight(&status, job_revisions.into_iter());
     let kept_tags: HashSet<String> = status
         .builds
         .iter()
@@ -275,6 +311,42 @@ mod tests {
         };
         let got = unrecorded(&status, ["old".to_string(), "new".to_string()].into_iter());
         assert_eq!(got, vec!["new".to_string()]);
+    }
+
+    #[test]
+    fn jobs_older_than_the_newest_record_are_not_in_flight() {
+        let rec = |revision: &str, finished_at: &str| gitimage_api::BuildRecord {
+            revision: revision.into(),
+            outcome: gitimage_api::BuildOutcome::Built,
+            digest: Some(A.into()),
+            context_tree: None,
+            source_revision: None,
+            reason: None,
+            message: None,
+            finished_at: finished_at.into(),
+        };
+        let status = gitimage_api::GitImageStatus {
+            builds: vec![
+                rec("kept-new", "2026-11-07T00:10:00Z"),
+                rec("kept-old", "2026-11-07T00:05:00Z"),
+            ],
+            latest_revision: Some("head".into()),
+            ..Default::default()
+        };
+        let newest = chrono::DateTime::parse_from_rfc3339("2026-11-07T00:10:00Z")
+            .unwrap()
+            .timestamp();
+        let jobs = [
+            // Record already dropped from status; its Job lingers until its TTL.
+            ("dropped".to_string(), Some(newest - 300)),
+            // Finished, not recorded yet.
+            ("just-finished".to_string(), Some(newest + 5)),
+            ("running".to_string(), None),
+            // Recorded: the keep-newest rule decides.
+            ("kept-new".to_string(), Some(newest - 1)),
+        ];
+        let got = in_flight(&status, jobs.into_iter());
+        assert_eq!(got, vec!["just-finished", "running", "head"]);
     }
 
     #[test]
