@@ -10,6 +10,9 @@ RUN npm run build
 
 FROM rust:1.99-bookworm AS chef
 RUN cargo install cargo-chef --locked
+# cargo-auditable embeds the resolved crate list in the binary (.dep-v0
+# section, survives strip) so Trivy can report Rust CVEs from the image.
+RUN cargo install cargo-auditable@0.7.7 --locked
 WORKDIR /src
 
 FROM chef AS planner
@@ -21,7 +24,7 @@ COPY --from=planner /src/recipe.json recipe.json
 RUN cargo chef cook --release --recipe-path recipe.json -p gitimage
 COPY . .
 COPY --from=ui /ui/dist ui/dist
-RUN cargo build --release -p gitimage && cp target/release/gitimage /gitimage
+RUN cargo auditable build --release -p gitimage && cp target/release/gitimage /gitimage
 
 FROM gcr.io/distroless/cc-debian13:nonroot
 COPY --from=builder /gitimage /usr/local/bin/gitimage
