@@ -113,14 +113,19 @@ jobs:
       - uses: actions/download-artifact@v4
         with: { name: ui-dist, path: ui/dist }
       - run: test -f ui/dist/index.html
-      - run: cargo build --release --locked -p gitimage
+      # cargo-auditable embeds the crate list in the binary (.dep-v0 section) so
+      # Trivy can report Rust CVEs from the release image. Copy the binary out
+      # right away: later steps build without the wrapper.
+      - uses: taiki-e/install-action@v2
+        with: { tool: cargo-auditable@0.7.7 }
+      - run: cargo auditable build --release --locked -p gitimage
+      - run: mkdir -p dist && cp target/release/gitimage dist/gitimage-${{ matrix.arch }} && dist/gitimage-${{ matrix.arch }} version
       - name: e2e test binary (release profile, shares the build above)
         if: matrix.arch == 'amd64'
         run: |
           bin=$(cargo test --release --locked -p e2e --test flow --no-run --message-format=json \
             | grep -o '"executable":"[^"]*"' | cut -d'"' -f4 | grep '/flow-' | tail -1)
           mkdir -p dist && cp "$bin" dist/e2e-flow
-      - run: mkdir -p dist && cp target/release/gitimage dist/gitimage-${{ matrix.arch }} && dist/gitimage-${{ matrix.arch }} version
       - uses: actions/upload-artifact@v4
         with: { name: "dist-${{ matrix.arch }}", path: dist/, retention-days: 7 }
 
