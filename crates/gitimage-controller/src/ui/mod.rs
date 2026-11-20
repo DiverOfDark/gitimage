@@ -220,6 +220,7 @@ async fn me(State(ui): State<Arc<UiState>>, Extension(id): Extension<Identity>) 
     Json(serde_json::json!({
         "user": id.user,
         "authMode": if ui.oidc.is_some() { "oidc" } else { "none" },
+        "version": gitimage_api::RELEASE_VERSION,
     }))
     .into_response()
 }

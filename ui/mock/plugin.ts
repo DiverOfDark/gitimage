@@ -244,7 +244,7 @@ export function mockApi(): Plugin {
           res.writeHead(status, { 'content-type': 'application/json' });
           res.end(JSON.stringify(body));
         };
-        if (url.pathname === '/api/me') return json({ user: 'kirill@example.com', authMode: 'oidc' });
+        if (url.pathname === '/api/me') return json({ user: 'kirill@example.com', authMode: 'oidc', version: '0.1.39' });
         if (url.pathname === '/api/gitimages') return json(gitimages());
         if (url.pathname === '/api/events') {
           const send = sse(res);

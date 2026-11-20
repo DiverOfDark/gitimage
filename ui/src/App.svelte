@@ -59,3 +59,18 @@
     <List />
   {/if}
 </main>
+
+{#if app.me?.version}
+  <footer class="mx-auto max-w-7xl px-4 pb-6 font-mono text-xs text-muted-foreground sm:px-6">
+    {#if /^\d+\.\d+\.\d+$/.test(app.me.version)}
+      <a
+        class="hover:text-foreground hover:underline"
+        href="https://github.com/DiverOfDark/gitimage/releases/tag/v{app.me.version}"
+        target="_blank"
+        rel="noreferrer">GitImage v{app.me.version}</a
+      >
+    {:else}
+      GitImage {app.me.version}
+    {/if}
+  </footer>
+{/if}

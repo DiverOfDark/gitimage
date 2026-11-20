@@ -9,11 +9,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use gitimage_api::Config;
 use kube::CustomResourceExt;
 
-/// Release version, injected by the pipeline (`GITIMAGE_VERSION`); the crate version otherwise.
-const VERSION: &str = match option_env!("GITIMAGE_VERSION") {
-    Some(v) => v,
-    None => env!("CARGO_PKG_VERSION"),
-};
+use gitimage_api::RELEASE_VERSION as VERSION;
 
 #[derive(Parser)]
 #[command(

@@ -14,3 +14,10 @@ pub use gitimage::{
 /// API group and version of every GitImage resource.
 pub const GROUP: &str = "gitimage.dev";
 pub const VERSION: &str = "v1alpha1";
+
+/// Release version of this build, injected by the pipeline (`GITIMAGE_VERSION`); the crate
+/// version otherwise.
+pub const RELEASE_VERSION: &str = match option_env!("GITIMAGE_VERSION") {
+    Some(v) => v,
+    None => env!("CARGO_PKG_VERSION"),
+};

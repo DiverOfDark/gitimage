@@ -62,6 +62,8 @@ export interface Detail {
 export interface Me {
   user: string | null;
   authMode: 'oidc' | 'none';
+  /** Release version of the controller serving the UI, e.g. `0.1.39`. */
+  version: string;
 }
 
 export interface Step {
