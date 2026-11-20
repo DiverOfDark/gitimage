@@ -95,7 +95,7 @@ spec:
               readOnly: true
               subPath: ca.crt
             - mountPath: /run/secrets/npmrc
-              name: build-secret-npmrc
+              name: build-secret-0
               readOnly: true
               subPath: npmrc
             - mountPath: /home/user/.local/share/buildkit
@@ -170,7 +170,7 @@ spec:
           secret:
             defaultMode: 288
             secretName: myapp-git
-        - name: build-secret-npmrc
+        - name: build-secret-0
           secret:
             items:
               - key: token

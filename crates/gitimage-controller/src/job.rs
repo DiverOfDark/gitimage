@@ -580,8 +580,10 @@ pub fn build_job(gi: &GitImage, cfg: &Config, p: &BuildParams) -> Job {
             ..Default::default()
         },
     ];
-    for (id, secret, key) in &p.secrets {
-        let vol = format!("build-secret-{id}");
+    // Volume names must be RFC 1123 labels, which secret ids (`keystore_password`) need
+    // not be; the id is only the file name and the BuildKit `--secret` id.
+    for (i, (id, secret, key)) in p.secrets.iter().enumerate() {
+        let vol = format!("build-secret-{i}");
         volumes.push(Volume {
             name: vol.clone(),
             secret: Some(SecretVolumeSource {
@@ -869,6 +871,49 @@ build:
     #[test]
     fn job_snapshot() {
         insta::assert_yaml_snapshot!(build_job(&gitimage(), &config(), &params()));
+    }
+
+    #[test]
+    fn secret_ids_need_not_be_volume_names() {
+        // `keystore_password` is a fine BuildKit secret id but not an RFC 1123 label;
+        // the API server rejected the whole Job when the id was used in the volume name.
+        let mut p = params();
+        p.secrets = vec![
+            ("keystore_password".into(), "ks".into(), "password".into()),
+            ("Npm.RC".into(), "npm-token".into(), "token".into()),
+        ];
+        let job = build_job(&gitimage(), &config(), &p);
+        let pod = job.spec.unwrap().template.spec.unwrap();
+        let label = |n: &str| {
+            n.len() <= 63
+                && n.chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+                && !n.starts_with('-')
+                && !n.ends_with('-')
+        };
+        for v in pod.volumes.as_ref().unwrap() {
+            assert!(
+                label(&v.name),
+                "volume name {:?} is not an RFC 1123 label",
+                v.name
+            );
+        }
+        let bk = pod
+            .containers
+            .iter()
+            .find(|c| c.name == "buildkit")
+            .unwrap();
+        let mounts = bk.volume_mounts.as_ref().unwrap();
+        let ks = mounts
+            .iter()
+            .find(|m| m.mount_path == "/run/secrets/keystore_password")
+            .unwrap();
+        assert_eq!(ks.sub_path.as_deref(), Some("keystore_password"));
+        assert!(pod.volumes.unwrap().iter().any(|v| v.name == ks.name));
+        let (args, _) = buildctl_args(&gitimage(), &config(), &p);
+        assert!(args.contains(
+            &"--secret=id=keystore_password,src=/run/secrets/keystore_password".to_string()
+        ));
     }
 
     #[test]
