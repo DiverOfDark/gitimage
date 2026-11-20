@@ -283,6 +283,9 @@ pub mod failure_reasons {
     pub const SECRET_MISSING: &str = "SecretMissing";
     /// The Job could not create its pod, e.g. Pod Security admission forbids it.
     pub const POD_CREATION_FAILED: &str = "PodCreationFailed";
+    /// The controller itself failed, e.g. the API server rejected the build Job. Retried
+    /// every 30 seconds and cleared by the next reconcile that succeeds.
+    pub const RECONCILE_ERROR: &str = "ReconcileError";
 }
 
 #[cfg(test)]

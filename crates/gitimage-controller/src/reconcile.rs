@@ -49,9 +49,7 @@ impl From<anyhow::Error> for Error {
 
 /// Requeue after an error.
 pub fn error_policy(gi: Arc<GitImage>, err: &Error, ctx: Arc<Ctx>) -> Action {
-    if let Error::Kube(kube::Error::Api(e)) = err
-        && e.message.contains("being terminated")
-    {
+    if namespace_terminating(err) {
         // The namespace is being deleted; nothing to do.
         return Action::await_change();
     }
@@ -561,6 +559,80 @@ async fn inspect_finished(
 }
 
 pub async fn reconcile(gi: Arc<GitImage>, ctx: Arc<Ctx>) -> Result<Action, Error> {
+    let result = reconcile_inner(gi.clone(), ctx.clone()).await;
+    if let Err(err) = &result
+        && !namespace_terminating(err)
+    {
+        record_error(&ctx, &gi, err).await;
+    }
+    result
+}
+
+fn namespace_terminating(err: &Error) -> bool {
+    matches!(err, Error::Kube(kube::Error::Api(e)) if e.message.contains("being terminated"))
+}
+
+/// The error as a user should read it: the API server's message, not the whole `Status`.
+fn error_message(err: &Error) -> String {
+    let msg = match err {
+        Error::Kube(kube::Error::Api(e)) => format!("kubernetes: {}", e.message),
+        other => other.to_string(),
+    };
+    truncate(&msg, 1024)
+}
+
+/// Puts a failed reconcile into status, so `kubectl get`/`describe` and the UI show it
+/// instead of only the controller log. The next successful reconcile clears it.
+async fn record_error(ctx: &Ctx, gi: &GitImage, err: &Error) {
+    let old = gi.status.clone().unwrap_or_default();
+    let new = with_error(&old, gi.metadata.generation, &error_message(err));
+    if new == old {
+        return;
+    }
+    let api: Api<GitImage> =
+        Api::namespaced(ctx.client.clone(), &gi.namespace().unwrap_or_default());
+    let patch = serde_json::json!({ "status": status_patch(&old, &new) });
+    if let Err(e) = api
+        .patch_status(
+            &gi.name_any(),
+            &PatchParams::default(),
+            &Patch::Merge(&patch),
+        )
+        .await
+    {
+        tracing::warn!(namespace = gi.namespace().unwrap_or_default(), name = gi.name_any(), error = %e, "could not record reconcile error in status");
+    }
+}
+
+fn with_error(old: &GitImageStatus, generation: Option<i64>, msg: &str) -> GitImageStatus {
+    let mut new = old.clone();
+    set_condition(
+        &mut new.conditions,
+        cond::FAILED,
+        true,
+        fail::RECONCILE_ERROR,
+        msg,
+        generation,
+    );
+    // Ready stays as it was if an image exists (it still serves); a GitImage that never
+    // got this far says why it has none.
+    if new
+        .condition(cond::READY)
+        .is_none_or(|c| c.status != "True")
+    {
+        set_condition(
+            &mut new.conditions,
+            cond::READY,
+            false,
+            fail::RECONCILE_ERROR,
+            msg,
+            generation,
+        );
+    }
+    new
+}
+
+async fn reconcile_inner(gi: Arc<GitImage>, ctx: Arc<Ctx>) -> Result<Action, Error> {
     if gi.metadata.deletion_timestamp.is_some() {
         return Ok(Action::await_change());
     }
@@ -1179,5 +1251,58 @@ mod tests {
         assert_eq!(p["latestRevision"], "cf5480d");
         assert_eq!(p["handledRebuild"], "1");
         assert!(!p.as_object().unwrap().contains_key("revision"));
+    }
+
+    #[test]
+    fn reconcile_error_is_shown_without_hiding_a_ready_image() {
+        let fresh = with_error(
+            &GitImageStatus::default(),
+            Some(1),
+            "kubernetes: Job is invalid",
+        );
+        let failed = fresh.condition(cond::FAILED).unwrap();
+        assert_eq!(
+            (failed.status.as_str(), failed.reason.as_str()),
+            ("True", fail::RECONCILE_ERROR)
+        );
+        assert_eq!(failed.message, "kubernetes: Job is invalid");
+        let ready = fresh.condition(cond::READY).unwrap();
+        assert_eq!(
+            (ready.status.as_str(), ready.reason.as_str()),
+            ("False", fail::RECONCILE_ERROR)
+        );
+
+        // An image that already serves stays Ready.
+        let mut built = GitImageStatus::default();
+        set_condition(
+            &mut built.conditions,
+            cond::READY,
+            true,
+            "Built",
+            "abc is ready",
+            Some(1),
+        );
+        let after = with_error(&built, Some(1), "boom");
+        assert_eq!(after.condition(cond::READY).unwrap().status, "True");
+        assert_eq!(
+            after.condition(cond::FAILED).unwrap().reason,
+            fail::RECONCILE_ERROR
+        );
+
+        // The same error again changes nothing, so it is not patched every 30 seconds.
+        assert_eq!(with_error(&after, Some(1), "boom"), after);
+    }
+
+    #[test]
+    fn api_errors_are_reported_by_their_message() {
+        let err = Error::Kube(kube::Error::Api(
+            kube::core::Status::failure("Job.batch \"x\" is invalid", "Invalid").boxed(),
+        ));
+        assert_eq!(
+            error_message(&err),
+            "kubernetes: Job.batch \"x\" is invalid"
+        );
+        let long = Error::Other("x".repeat(5000));
+        assert_eq!(error_message(&long).chars().count(), 1024);
     }
 }

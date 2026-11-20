@@ -32,7 +32,12 @@ spec:
 | `conditions` | `Ready`, `Building` (message = current BuildKit step), `Failed` (reason) |
 
 Failure reasons: `ResolveFailed`, `SecretMissing`, `CloneFailed`, `BuildFailed`, `PushFailed`,
-`DeadlineExceeded`.
+`DeadlineExceeded`, `PodCreationFailed`, `ReconcileError`.
+
+`ReconcileError` means the controller itself failed, for example because the API server
+rejected the build Job or a quota forbids it; the message is the API server's. The controller
+retries every 30 seconds, and the next successful reconcile clears the condition. If the
+GitImage has no image yet, `Ready` is `False` with the same reason, so `kubectl get gi` shows it.
 
 ## Behaviour
 

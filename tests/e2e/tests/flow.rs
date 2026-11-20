@@ -5,7 +5,7 @@ use std::time::Duration;
 use e2e::*;
 use gitimage_api::{BuildOutcome, GitImage};
 use k8s_openapi::api::apps::v1::Deployment;
-use k8s_openapi::api::core::v1::{Pod, Secret};
+use k8s_openapi::api::core::v1::{Pod, ResourceQuota, Secret};
 use kube::api::{Patch, PatchParams, PostParams};
 
 const BUILD: Duration = Duration::from_secs(420);
@@ -245,7 +245,7 @@ async fn build_secret_is_not_in_any_layer() -> anyhow::Result<()> {
     gitea.create_repo(&repo, false).await?;
     let secret_value = "s3cr3t-value-that-must-not-leak";
     create_secret(&ns, "npm-token", &[("token", secret_value)]).await?;
-    let df = "FROM docker.io/library/busybox:1.37\nRUN --mount=type=secret,id=npmrc test \"$(cat /run/secrets/npmrc)\" = 's3cr3t-value-that-must-not-leak' && echo ok > /used\nCMD [\"sleep\", \"3600\"]\n";
+    let df = "FROM docker.io/library/busybox:1.37\nRUN --mount=type=secret,id=npm_rc test \"$(cat /run/secrets/npm_rc)\" = 's3cr3t-value-that-must-not-leak' && echo ok > /used\nCMD [\"sleep\", \"3600\"]\n";
     let sha = gitea
         .commit(&repo, "main", &[("Dockerfile", df)], "secret")
         .await?;
@@ -253,7 +253,7 @@ async fn build_secret_is_not_in_any_layer() -> anyhow::Result<()> {
         &ns,
         "app",
         &format!(
-            "url: {}\nbuild: {{ secrets: [{{ id: npmrc, secretRef: {{ name: npm-token }} }}] }}",
+            "url: {}\nbuild: {{ secrets: [{{ id: npm_rc, secretRef: {{ name: npm-token }} }}] }}",
             Gitea::https_url(&repo)
         ),
     )
@@ -554,6 +554,55 @@ async fn pod_security_rejection_fails_fast() -> anyhow::Result<()> {
     assert!(
         msg.contains(&format!("pod-security.kubernetes.io/enforce={needed}")),
         "{msg}"
+    );
+    Ok(())
+}
+
+/// A reconcile the API server rejects (here: a quota allowing no Jobs) is in status, not only
+/// in the controller log, and the next successful reconcile clears it.
+#[tokio::test]
+#[ignore]
+async fn reconcile_error_is_in_status() -> anyhow::Result<()> {
+    let client = client().await?;
+    let ns = TestNs::new(&client, "e2e-recerr").await?;
+    let quotas = ns.api::<ResourceQuota>();
+    let quota: ResourceQuota = serde_json::from_value(serde_json::json!({
+        "metadata": { "name": "no-jobs" },
+        "spec": { "hard": { "count/jobs.batch": "0" } }
+    }))?;
+    quotas.create(&PostParams::default(), &quota).await?;
+    let gitea = Gitea::default();
+    let repo = unique("recerr");
+    gitea.create_repo(&repo, false).await?;
+    let sha = gitea
+        .commit(
+            &repo,
+            "main",
+            &[("Dockerfile", &dockerfile("recerr"))],
+            "recerr",
+        )
+        .await?;
+    create_gitimage(&ns, "app", &format!("url: {}", Gitea::https_url(&repo))).await?;
+    let api = ns.api::<GitImage>();
+    let msg = wait_for("ReconcileError", Duration::from_secs(90), || async {
+        let gi = api.get("app").await?;
+        let st = gi.status.unwrap_or_default();
+        Ok(st
+            .condition("Failed")
+            .filter(|c| c.status == "True" && c.reason == "ReconcileError")
+            .filter(|_| st.condition("Ready").is_some_and(|r| r.status == "False"))
+            .map(|c| c.message.clone()))
+    })
+    .await?;
+    assert!(msg.contains("exceeded quota"), "{msg}");
+    assert!(!msg.contains("Status {"), "raw error struct leaked: {msg}");
+
+    quotas.delete("no-jobs", &Default::default()).await?;
+    let gi = wait_built(&ns, "app", &sha, BUILD).await?;
+    let failed = gi.status.unwrap_or_default().condition("Failed").cloned();
+    assert!(
+        failed.as_ref().is_none_or(|c| c.status == "False"),
+        "{failed:?}"
     );
     Ok(())
 }
