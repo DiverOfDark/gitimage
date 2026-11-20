@@ -7,8 +7,9 @@
    image is reused and nothing is built.
 3. **Build.** A Job in the tenant namespace: an init container clones exactly that commit at
    depth 1 (git credentials are mounted only here), then BuildKit builds it under the chosen
-   isolation mode. Progress (`step 4/12 RUN npm ci`) is copied into `status` and into Events on
-   waiting pods.
+   isolation mode. Progress (`step 20/42 backend (+1 parallel): RUN cargo build`) is copied
+   into `status` and into Events on waiting pods. The count is over every step of every stage,
+   since stages build in parallel; the step named is the one running longest.
 4. **Push.** BuildKit pushes the image and its layer cache to the controller's push endpoint
    with a token valid only for `<namespace>/<gitimage>` and only while that Job runs. The
    endpoint writes to the registry or S3.

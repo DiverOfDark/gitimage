@@ -347,15 +347,18 @@ fn follow_job(ctx: &Arc<Ctx>, gi: &GitImage, job: &Job) {
             };
             let mut lines = stream.lines();
             while let Ok(Some(line)) = lines.try_next().await {
-                if progress.feed(&line) || progress.error().is_some() {
-                    let snapshot = JobProgress {
-                        step: progress.current(),
-                        error: progress.error().map(str::to_string),
-                    };
-                    ctx.progress
-                        .lock()
-                        .unwrap()
-                        .insert(uid.clone(), snapshot.clone());
+                let changed = progress.feed(&line);
+                // Every line: the failure detail is the last output line when BuildKit
+                // stops without reporting an error.
+                let snapshot = JobProgress {
+                    step: progress.current(),
+                    error: progress.failure(),
+                };
+                ctx.progress
+                    .lock()
+                    .unwrap()
+                    .insert(uid.clone(), snapshot.clone());
+                if changed || progress.error().is_some() {
                     if last_sent.elapsed() >= Duration::from_secs(5) {
                         last_sent = Instant::now();
                         let _ = ctx.trigger.send(ObjectRef::new(&name).within(&ns));
