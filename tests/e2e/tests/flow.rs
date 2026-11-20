@@ -10,9 +10,11 @@ use kube::api::{Patch, PatchParams, PostParams};
 
 const BUILD: Duration = Duration::from_secs(420);
 
+/// The hard link of a base-image file is what `apt-get install` does when it upgrades a package;
+/// gVisor's overlay refuses it unless BuildKit uses the native snapshotter.
 fn dockerfile(msg: &str) -> String {
     format!(
-        "FROM docker.io/library/busybox:1.37\nRUN echo '{msg}' > /msg\nCMD [\"sh\", \"-c\", \"cat /msg; sleep 3600\"]\n"
+        "FROM docker.io/library/busybox:1.37\nRUN ln /bin/busybox /busybox-link && echo '{msg}' > /msg\nCMD [\"sh\", \"-c\", \"cat /msg; sleep 3600\"]\n"
     )
 }
 

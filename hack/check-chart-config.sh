@@ -18,6 +18,8 @@ check --set buildPolicy.isolation.mode=runtimeClass --set buildPolicy.isolation.
   --set storage.type=s3 --set storage.s3.bucket=gi --set storage.s3.endpoint=http://rgw --set storage.s3.secret=s3 \
   --set hooks.baseURL=https://gitimage.example.com --set 'network.clusterCIDRs={10.244.0.0/16,10.96.0.0/12}' \
   --set build.defaultResources.requests.cpu=1
+check --set buildPolicy.isolation.mode=runtimeClass --set buildPolicy.isolation.runtimeClassName=gvisor \
+  --set buildPolicy.isolation.snapshotter=native --set storage.registry.url=r/b --set storage.registry.pushSecret=p
 check --set buildPolicy.isolation.mode=privileged --set buildPolicy.isolation.allowPrivileged=true \
   --set storage.registry.url=r/b --set storage.registry.pushSecret=p --set build.cache=off
 check --set buildPolicy.isolation.mode=runtimeClass --set buildPolicy.isolation.runtimeClassName=sysbox-runc \

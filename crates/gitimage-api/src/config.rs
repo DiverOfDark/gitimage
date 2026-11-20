@@ -250,6 +250,34 @@ pub struct Isolation {
     /// (`sysbox-runc`). Build pods then fit the Pod Security `baseline` level.
     #[serde(default)]
     pub rootful_in_sandbox: bool,
+    /// BuildKit's snapshotter. gVisor needs `native`: its overlay answers `ENODEV` to a hard
+    /// link of a file in a lower layer, so e.g. `apt-get install` upgrading a package of the
+    /// base image fails with "unable to make backup link ... No such device".
+    #[serde(default)]
+    pub snapshotter: Snapshotter,
+}
+
+/// `--oci-worker-snapshotter` of the build's BuildKit daemon.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum Snapshotter {
+    /// BuildKit's own choice (overlayfs where the kernel allows it).
+    #[default]
+    Auto,
+    Overlayfs,
+    /// Copies each layer: slower and bigger, but needs nothing from the filesystem.
+    Native,
+}
+
+impl Snapshotter {
+    /// The `buildkitd` flag, if one is needed.
+    pub fn flag(self) -> Option<&'static str> {
+        match self {
+            Self::Auto => None,
+            Self::Overlayfs => Some("--oci-worker-snapshotter=overlayfs"),
+            Self::Native => Some("--oci-worker-snapshotter=native"),
+        }
+    }
 }
 
 impl Isolation {
@@ -553,6 +581,35 @@ network: { clusterCIDRs: [10.244.0.0/16, 10.96.0.0/12] }
         assert_eq!(cfg.build.active_deadline_seconds(), 3600);
         assert_eq!(cfg.build.platforms, vec!["linux/amd64"]);
         assert!(cfg.build_policy.egress.deny_cluster_cidrs);
+    }
+
+    #[test]
+    fn snapshotter_defaults_to_auto_and_rejects_unknown_values() {
+        assert_eq!(
+            Config::from_yaml(HOMELAB)
+                .unwrap()
+                .build_policy
+                .isolation
+                .snapshotter,
+            Snapshotter::Auto
+        );
+        let native = HOMELAB.replace(
+            "runtimeClassName: kata }",
+            "runtimeClassName: gvisor, snapshotter: native }",
+        );
+        assert_eq!(
+            Config::from_yaml(&native)
+                .unwrap()
+                .build_policy
+                .isolation
+                .snapshotter,
+            Snapshotter::Native
+        );
+        let bad = HOMELAB.replace(
+            "runtimeClassName: kata }",
+            "runtimeClassName: gvisor, snapshotter: zfs }",
+        );
+        assert!(Config::from_yaml(&bad).is_err());
     }
 
     #[test]

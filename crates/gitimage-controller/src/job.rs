@@ -384,11 +384,12 @@ pub fn pod_overlay(cfg: &Config, pod: &mut PodSpec, buildkit: &mut Container) {
         }),
         ..Default::default()
     };
-    let env = buildkit.env.get_or_insert_with(Vec::new);
     let privileged = SecurityContext {
         privileged: Some(true),
         ..Default::default()
     };
+    // Flags for the buildkitd that buildctl-daemonless.sh starts.
+    let mut flags: Vec<&str> = Vec::new();
     match iso.mode {
         IsolationMode::RuntimeClass if iso.privileged_in_sandbox => {
             pod.runtime_class_name = iso.runtime_class_name.clone();
@@ -408,24 +409,24 @@ pub fn pod_overlay(cfg: &Config, pod: &mut PodSpec, buildkit: &mut Container) {
         IsolationMode::RuntimeClass => {
             pod.runtime_class_name = iso.runtime_class_name.clone();
             buildkit.security_context = Some(unconfined);
-            env.push(EnvVar {
-                name: "BUILDKITD_FLAGS".into(),
-                value: Some("--oci-worker-no-process-sandbox".into()),
-                ..Default::default()
-            });
+            flags.push("--oci-worker-no-process-sandbox");
         }
         IsolationMode::Userns => {
             pod.host_users = Some(false);
             buildkit.security_context = Some(unconfined);
-            env.push(EnvVar {
-                name: "BUILDKITD_FLAGS".into(),
-                value: Some("--oci-worker-no-process-sandbox".into()),
-                ..Default::default()
-            });
+            flags.push("--oci-worker-no-process-sandbox");
         }
         IsolationMode::Privileged => {
             buildkit.security_context = Some(privileged);
         }
+    }
+    flags.extend(iso.snapshotter.flag());
+    if !flags.is_empty() {
+        buildkit.env.get_or_insert_with(Vec::new).push(EnvVar {
+            name: "BUILDKITD_FLAGS".into(),
+            value: Some(flags.join(" ")),
+            ..Default::default()
+        });
     }
 }
 
@@ -945,6 +946,36 @@ build:
         assert!(
             args.iter()
                 .any(|a| a == "--local=context=/workspace/services/api")
+        );
+    }
+
+    fn buildkitd_flags(job: Job) -> Option<String> {
+        job.spec.unwrap().template.spec.unwrap().containers[0]
+            .env
+            .as_ref()
+            .and_then(|e| e.iter().find(|e| e.name == "BUILDKITD_FLAGS"))
+            .and_then(|e| e.value.clone())
+    }
+
+    #[test]
+    fn snapshotter_is_passed_to_buildkitd() {
+        // gVisor: rootless, and native because its overlay cannot hard-link lower files.
+        let mut cfg = config();
+        cfg.build_policy.isolation.runtime_class_name = Some("gvisor".into());
+        assert_eq!(
+            buildkitd_flags(build_job(&gitimage(), &cfg, &params())).as_deref(),
+            Some("--oci-worker-no-process-sandbox")
+        );
+        cfg.build_policy.isolation.snapshotter = gitimage_api::config::Snapshotter::Native;
+        assert_eq!(
+            buildkitd_flags(build_job(&gitimage(), &cfg, &params())).as_deref(),
+            Some("--oci-worker-no-process-sandbox --oci-worker-snapshotter=native")
+        );
+        // Rootful modes get the flag on its own.
+        cfg.build_policy.isolation.privileged_in_sandbox = true;
+        assert_eq!(
+            buildkitd_flags(build_job(&gitimage(), &cfg, &params())).as_deref(),
+            Some("--oci-worker-snapshotter=native")
         );
     }
 

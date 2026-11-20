@@ -8,7 +8,7 @@ Nothing falls back to a weaker mode, and nothing builds.
 | Mode | Values | Build pod | Verified in CI |
 | --- | --- | --- | --- |
 | Kata | `runtimeClass`, `runtimeClassName: kata-qemu`, `privilegedInSandbox: true` | rootful BuildKit, privileged inside the VM | kind + kata-deploy (KVM runners) |
-| gVisor | `runtimeClass`, `runtimeClassName: gvisor` | rootless BuildKit, seccomp/AppArmor unconfined inside the sandbox | kind + runsc |
+| gVisor | `runtimeClass`, `runtimeClassName: gvisor`, `snapshotter: native` | rootless BuildKit, seccomp/AppArmor unconfined inside the sandbox | kind + runsc |
 | Sysbox | `runtimeClass`, `runtimeClassName: sysbox-runc`, `rootfulInSandbox: true` | rootful BuildKit, unprivileged, `hostUsers: false`; Pod Security `baseline` | kind + Sysbox 0.7.1 (`hack/e2e/sysbox.sh`) |
 | User namespaces | `userns` | rootless BuildKit, `hostUsers: false` | not on kind (see below) |
 | Privileged | `privileged` + `allowPrivileged: true` | rootful BuildKit, privileged on the node | kind |
@@ -18,6 +18,13 @@ rootless BuildKit's `newuidmap` needs, so BuildKit runs rootful and privileged *
 guest*. That is only safe when the runtime keeps privileged in the guest: containerd's
 `privileged_without_host_devices = true` for the Kata handler (kata-deploy sets it). Check your
 node's containerd config before enabling it.
+
+**gVisor and `snapshotter: native`.** gVisor's overlay answers `ENODEV` to a hard link of a
+file that lives in a lower layer. Any build that does that fails, and package managers do it
+routinely: `apt-get install` upgrading a package the base image already has stops with
+`unable to make backup link of '...' before installing new version: No such device`. The
+`native` snapshotter copies layers instead of stacking them; builds are slower and use more
+disk, but every filesystem operation works. (`fuse-overlayfs` does not run in gVisor at all.)
 
 **Sysbox and `rootfulInSandbox`.** [Sysbox](https://github.com/nestybox/sysbox) runs the pod in
 a user namespace, gives root in the pod its capabilities there and virtualizes procfs/sysfs, so

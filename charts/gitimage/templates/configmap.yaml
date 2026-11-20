@@ -24,6 +24,7 @@ data:
         allowPrivileged: {{ .Values.buildPolicy.isolation.allowPrivileged }}
         privilegedInSandbox: {{ .Values.buildPolicy.isolation.privilegedInSandbox }}
         rootfulInSandbox: {{ .Values.buildPolicy.isolation.rootfulInSandbox }}
+        snapshotter: {{ .Values.buildPolicy.isolation.snapshotter | default "auto" }}
       egress:
         allowInternet: {{ .Values.buildPolicy.egress.allowInternet }}
         denyClusterCIDRs: {{ .Values.buildPolicy.egress.denyClusterCIDRs }}
