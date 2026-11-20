@@ -27,8 +27,9 @@ if [ -z "$ok" ]; then
 fi
 echo "ok: $ok exited 3 with IsolationUnavailable"
 
-# gVisor without the native snapshotter cannot hard-link a lower layer's file; the check's
-# build probe must catch that at startup instead of the first apt-get upgrade in a build.
+# gVisor with its default shared file access on volumes cannot copy up a memory-mapped
+# lower-layer file; the check's build probe must catch that at startup instead of the first
+# apt-get upgrade in a build. (RuntimeClass gvisor: runsc defaults; hack/e2e/gvisor.sh.)
 if [ "$RESTORE" = gvisor ]; then
   helm upgrade gitimage charts/gitimage -n "$NS" --reuse-values \
     --set buildPolicy.isolation.runtimeClassName=gvisor --set buildPolicy.isolation.snapshotter=auto >/dev/null
@@ -44,9 +45,9 @@ if [ "$RESTORE" = gvisor ]; then
   done
   if [ -z "$ok" ]; then
     ./hack/e2e/install.sh "$STORAGE" "$RESTORE" >/dev/null
-    echo "FAIL: gVisor with snapshotter auto passed the isolation check"; exit 1
+    echo "FAIL: gVisor with shared file access passed the isolation check"; exit 1
   fi
-  echo "ok: $ok exited 3: gVisor without snapshotter native fails the hard-link probe"
+  echo "ok: $ok exited 3: gVisor with shared file access fails the hard-link probe"
 fi
 
 ./hack/e2e/install.sh "$STORAGE" "$RESTORE" >/dev/null

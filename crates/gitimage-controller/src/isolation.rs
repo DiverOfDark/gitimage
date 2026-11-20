@@ -35,13 +35,14 @@ pub fn check_key(cfg: &Config) -> String {
 }
 
 /// Printed when the hard-link probe fails; the controller's error message quotes the log.
-const HARDLINK_FAILED: &str = "gitimage: hard links to files of a lower layer fail in this sandbox (gVisor: set buildPolicy.isolation.snapshotter: native)";
+const HARDLINK_FAILED: &str = "gitimage: hard links to files of a lower layer fail in this sandbox (gVisor: run builds with a runsc handler that has file-access-mounts=exclusive, see the isolation docs; or set buildPolicy.isolation.snapshotter: native)";
 
 /// The check: BuildKit starts and lists its workers, then builds a two-layer image whose second
-/// layer hard-links a file of the first. That is what `apt-get` does when it upgrades a package
-/// of the base image, and gVisor's overlay refuses it (`ENODEV`) unless BuildKit uses the native
-/// snapshotter. The image is assembled from the BuildKit image's own busybox and musl, so the
-/// check pulls nothing.
+/// layer hard-links a file of the first, with busybox `ln` - so the file being linked is also
+/// mapped by the running process. That is what `apt-get` does when it upgrades a library it has
+/// loaded, and gVisor refuses it (`ENODEV`) when the volume holding BuildKit's state uses shared
+/// file access: copy-up of a memory-mapped lower file needs exclusive access. The image is
+/// assembled from the BuildKit image's own busybox and musl, so the check pulls nothing.
 const CHECK_SCRIPT: &str = r#"set -eu
 buildctl-daemonless.sh debug workers
 ctx=$(mktemp -d)
@@ -284,7 +285,7 @@ mod tests {
         assert_eq!(cmd[..2], ["sh".to_string(), "-c".to_string()]);
         assert!(cmd[2].contains("buildctl-daemonless.sh debug workers"));
         assert!(cmd[2].contains(r#"RUN ["/bin/busybox", "ln", "/bin/busybox", "/hardlink"]"#));
-        assert!(cmd[2].contains("set buildPolicy.isolation.snapshotter: native"));
+        assert!(cmd[2].contains("file-access-mounts=exclusive"));
         assert_eq!(check_key(&cfg).len(), 16);
     }
 

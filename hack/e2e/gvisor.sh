@@ -23,11 +23,22 @@ fi
 for node in $(kind get nodes --name "$CLUSTER"); do
   # runsc finds its helpers in gvisor-bin/ next to itself.
   docker cp "$tmp/x/." "$node:/usr/local/bin/"
-  if ! docker exec "$node" grep -q 'runtimes.runsc' /etc/containerd/config.toml; then
-    docker exec "$node" sh -c 'cat >> /etc/containerd/config.toml <<TOML
+  # runsc: gVisor's defaults (volumes shared). runsc-build: file-access-mounts=exclusive, the
+  # setup GitImage builds need (docs/src/operations/isolation.md); the isolation check must
+  # reject the first and pass the second.
+  if ! docker exec "$node" grep -q 'runtimes.runsc-build' /etc/containerd/config.toml; then
+    docker exec "$node" sh -c 'printf "[runsc_config]\n  file-access-mounts = \"exclusive\"\n" > /etc/containerd/runsc-build.toml
+cat >> /etc/containerd/config.toml <<TOML
 
 [plugins."io.containerd.cri.v1.runtime".containerd.runtimes.runsc]
   runtime_type = "io.containerd.runsc.v1"
+
+[plugins."io.containerd.cri.v1.runtime".containerd.runtimes.runsc-build]
+  runtime_type = "io.containerd.runsc.v1"
+
+[plugins."io.containerd.cri.v1.runtime".containerd.runtimes.runsc-build.options]
+  TypeUrl = "io.containerd.runsc.v1.options"
+  ConfigPath = "/etc/containerd/runsc-build.toml"
 TOML'
     docker exec "$node" systemctl restart containerd
   fi
@@ -37,6 +48,11 @@ apiVersion: node.k8s.io/v1
 kind: RuntimeClass
 metadata: { name: gvisor }
 handler: runsc
+---
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata: { name: gvisor-build }
+handler: runsc-build
 YAML
 kubectl wait --for=condition=Ready nodes --all --timeout=120s >/dev/null
-echo "gVisor installed; RuntimeClass gvisor ready"
+echo "gVisor installed; RuntimeClasses gvisor (defaults) and gvisor-build (exclusive) ready"
