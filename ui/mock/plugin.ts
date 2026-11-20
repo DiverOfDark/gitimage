@@ -9,7 +9,23 @@ const MIN = 60_000;
 const H = 60 * MIN;
 const D = 24 * H;
 
-const SCRIPT: { title: string; internal?: boolean; cached?: boolean; ms: number; out?: string[]; error?: string }[] = [
+/**
+ * `raw` chunks are sent exactly as BuildKit would: CRLF line endings, `\r` progress updates and
+ * lines split across chunks, sent before `out`. The npm ci step's 300+ lines exceed the viewer's
+ * tail, so "Show all" appears.
+ */
+const NPM_RAW = [
+  'npm http fetch GET 200 https://registry.npmjs.org/vite 41ms (cache miss)\r\n',
+  ...Array.from({ length: 320 }, (_, i) => `npm http fetch GET 200 https://registry.npmjs.org/pkg-${i} ${10 + (i % 50)}ms (cache miss)\r\n`),
+  'reify: timing reifyNode:node_modules/esbuild 10%\r',
+  'reify: timing reifyNode:node_modules/esbuild 60%\r',
+  'reify: timing reifyNode:node_modules/esbuild Completed in 912ms\r',
+  '\n',
+  'npm notice New minor version of npm avai',
+  'lable! 11.4.2 -> 11.6.0\r\n',
+];
+
+const SCRIPT: { title: string; internal?: boolean; cached?: boolean; ms: number; raw?: string[]; out?: string[]; error?: string }[] = [
   { title: 'load build definition from Dockerfile', internal: true, ms: 300 },
   { title: 'load metadata for docker.io/library/node:22-alpine', internal: true, ms: 900 },
   { title: 'load .dockerignore', internal: true, ms: 200 },
@@ -20,6 +36,7 @@ const SCRIPT: { title: string; internal?: boolean; cached?: boolean; ms: number;
   {
     title: 'step 4/9 RUN --mount=type=secret,id=npmrc,target=/root/.npmrc npm ci',
     ms: 9000,
+    raw: NPM_RAW,
     out: [
       'npm warn deprecated inflight@1.0.6: This module is not supported, and leaks memory.',
       'npm warn deprecated glob@7.2.3: Glob versions prior to v9 are no longer supported',
@@ -214,6 +231,11 @@ async function streamLogs(req: IncomingMessage, res: ServerResponse, mode: 'live
     const out = failAt === i
       ? ['   Compiling worker v0.9.2 (/app)', 'error[E0425]: cannot find value `retry_budget` in this scope', '  --> src/queue.rs:118:27', '    |', '118 |         if attempts > retry_budget {', '    |                       ^^^^^^^^^^^^ not found in this scope', '', 'error: could not compile `worker` (bin "worker") due to 1 previous error']
       : (s.out ?? []);
+    for (const chunk of failAt === i ? [] : (s.raw ?? [])) {
+      if (!open) return;
+      if (mode === 'live') await sleep(5);
+      send('build', { steps: [], logs: [{ step: id, text: chunk }] });
+    }
     for (const line of out) {
       if (!open) return;
       await pace(s.ms / (out.length + 1));

@@ -6,6 +6,7 @@
   import X from '@lucide/svelte/icons/x';
   import { tick, untrack } from 'svelte';
   import { parseStep, type BuildEvent, type Step, type Task } from './api';
+  import { count, emptyLines, feed, render, type Lines } from './terminal';
   import { clock, stopwatch } from './time.svelte';
 
   let {
@@ -15,10 +16,14 @@
     wait = true,
   }: { namespace: string; name: string; revision: string; /** false for a build that already ended */ wait?: boolean } = $props();
 
-  /** Keep the page responsive on very chatty steps: only the tail of a step's output is kept. */
-  const MAX_CHARS = 400_000;
+  /** An open step shows its last TAIL lines until "Show all" is clicked. */
+  const TAIL = 200;
 
-  type Row = Step & { text: string; cut: boolean; tasks: Task[] };
+  /** `rev` changes whenever the step's output does; the lines themselves live in `output`. */
+  type Row = Step & { rev: number; tasks: Task[] };
+  // Not $state: a deep proxy around tens of thousands of lines would slow every append.
+  let output = new Map<string, Lines>();
+  let full = $state<Record<string, boolean>>({});
   let rows = $state<Row[]>([]);
   let before = $state<string[]>([]); // clone output
   let after = $state<string[]>([]); // plain lines of the build container
@@ -30,13 +35,8 @@
   let pane: HTMLDivElement | undefined = $state();
   let attempt = $state(0);
 
-  const clean = (s: string) =>
-    s
-      // eslint-disable-next-line no-control-regex
-      .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '')
-      .split('\n')
-      .map((l) => l.slice(l.lastIndexOf('\r') + 1))
-      .join('\n');
+  /** The step's output, read with its `rev` so the template updates when it changes. */
+  const lines = (r: Row) => (r.rev, output.get(r.id));
 
   function apply(ev: BuildEvent) {
     for (const s of ev.steps) {
@@ -49,7 +49,7 @@
       }
       // BuildKit reports steps as it reaches them; keep each stage together, in Dockerfile order.
       const { n, of } = parseStep(s.title);
-      const fresh = { ...s, text: '', cut: false, tasks: [] };
+      const fresh = { ...s, rev: 0, tasks: [] };
       // Two stages may have as many steps as each other; the name tells them apart.
       const stage = (r: Row) => n !== undefined && r.stage === s.stage && parseStep(r.title).of === of;
       const later = rows.findIndex((r) => stage(r) && (parseStep(r.title).n ?? 0) > n!);
@@ -68,11 +68,10 @@
     for (const l of ev.logs) {
       const row = rows.find((r) => r.id === l.step);
       if (!row) continue;
-      row.text += clean(l.text);
-      if (row.text.length > MAX_CHARS) {
-        row.text = row.text.slice(row.text.indexOf('\n', row.text.length - MAX_CHARS / 2) + 1);
-        row.cut = true;
-      }
+      let out = output.get(row.id);
+      if (!out) output.set(row.id, (out = emptyLines()));
+      feed(out, l.text);
+      row.rev++;
     }
   }
 
@@ -88,6 +87,8 @@
       end = null;
       lost = false;
       toggled = {};
+      full = {};
+      output = new Map();
       follow = true;
     });
     const es = new EventSource(url);
@@ -119,7 +120,11 @@
   const duration = (r: Row) =>
     r.started ? stopwatch((r.completed ? Date.parse(r.completed) : end ? Date.parse(r.started) : clock()) - Date.parse(r.started)) : '';
 
-  const hasBody = (r: Row) => !!r.text || !!r.error || r.tasks.length > 0;
+  const hasText = (r: Row) => {
+    const l = lines(r);
+    return !!l && count(l) > 0;
+  };
+  const hasBody = (r: Row) => hasText(r) || !!r.error || r.tasks.length > 0;
   /** `extracting sha256:3c63cf667d0e…` is a layer; twelve characters name it. */
   const taskName = (t: Task) => t.id.replace(/sha256:([0-9a-f]{12})[0-9a-f]+/, '$1');
   const mb = (n: number) => (n >= 1e9 ? `${(n / 1e9).toFixed(2)} GB` : n >= 1e6 ? `${(n / 1e6).toFixed(0)} MB` : `${Math.ceil(n / 1e3)} kB`);
@@ -212,7 +217,7 @@
         {#if open && hasBody(r)}
           <div class="bg-log-raised/60 py-2 pr-4 pl-[2.6rem]">
             {#if r.tasks.length}
-              <ul class={r.text || r.error ? 'mb-2' : ''}>
+              <ul class={hasText(r) || r.error ? 'mb-2' : ''}>
                 {#each r.tasks as t (t.id)}
                   <li class="flex gap-3 {t.completed || end ? 'text-log-muted' : ''}">
                     <span class="min-w-0 flex-1 truncate">{taskName(t)}</span>
@@ -221,8 +226,24 @@
                 {/each}
               </ul>
             {/if}
-            {#if r.cut}<p class="mb-1 text-log-muted">Earlier output of this step is not shown.</p>{/if}
-            {#if r.text}<pre class="break-words whitespace-pre-wrap">{r.text}</pre>{/if}
+            {#if hasText(r)}
+              {@const l = lines(r)!}
+              {@const total = count(l)}
+              {@const all = full[r.id] ?? false}
+              {#if total > TAIL}
+                <button
+                  type="button"
+                  class="mb-1 text-log-muted underline decoration-dotted underline-offset-2 hover:text-log-foreground"
+                  onclick={() => (full[r.id] = !all)}
+                >
+                  {all ? `Show only the last ${TAIL} lines` : `Show all ${total.toLocaleString()} lines (${(total - TAIL).toLocaleString()} hidden)`}
+                </button>
+              {/if}
+              {#if all && l.dropped}
+                <p class="mb-1 text-log-muted">The first {l.dropped.toLocaleString()} lines of this step are not kept.</p>
+              {/if}
+              <pre class="break-words whitespace-pre-wrap">{render(l, all ? undefined : TAIL)}</pre>
+            {/if}
             {#if r.error}<pre class="mt-1 break-words whitespace-pre-wrap {failed(r) ? 'text-[#ff8278]' : 'text-log-muted'}">{r.error}</pre>{/if}
           </div>
         {/if}
