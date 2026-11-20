@@ -12,6 +12,11 @@ ignore = [
   # crypto-bigint 0.5 timing variability, via p256/p384 0.13 (ssh ECDSA client keys). The
   # fixed 0.7 line needs p256 0.14, which russh's ssh-key does not use yet.
   { id = "RUSTSEC-2026-0387", reason = "ECDSA used only for ssh client signatures in short-lived processes; awaiting ssh-key upgrade" },
+  # chrono declared unmaintained (chronotope/chrono#1768), humantime with it since it wraps
+  # chrono. Unmaintained, not vulnerable; no release fixes it. chrono also comes in through
+  # object_store and russh-util, so dropping our own use alone would not clear it.
+  { id = "RUSTSEC-2026-0543", reason = "chrono unmaintained, not vulnerable; transitive via object_store and russh" },
+  { id = "RUSTSEC-2026-0542", reason = "humantime unmaintained because it wraps chrono; not vulnerable" },
 ]
 
 [licenses]
