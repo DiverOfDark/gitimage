@@ -59,6 +59,8 @@ impl BuildkitLayout {
 }
 const GIT_CREDS_DIR: &str = "/etc/gitimage/git";
 const SECRETS_DIR: &str = "/run/secrets";
+/// Written by the clone init container (`--meta-dir`), read by the BuildKit container.
+const META_DIR: &str = "/etc/gitimage/meta";
 
 /// Everything a build Job needs beyond the GitImage and the config.
 #[derive(Clone, Debug)]
@@ -217,10 +219,29 @@ pub fn buildctl_args(gi: &GitImage, cfg: &Config, p: &BuildParams) -> (Vec<Strin
             });
         }
     }
+    // After the tenant's args, so they cannot be overridden. GITIMAGE_COMMIT_TIME is only
+    // known after the clone: `commit_time_wrapper` appends it at run time.
+    args.push(format!("--opt=build-arg:{}={}", keys::ARG_REVISION, p.sha));
     for (id, _, _) in &p.secrets {
         args.push(format!("--secret=id={id},src={SECRETS_DIR}/{id}"));
     }
     (args, env)
+}
+
+/// Wraps BuildKit's `command` so the build also gets `GITIMAGE_COMMIT_TIME`, read from the
+/// file the clone init container wrote. No `$(` in the script: Kubernetes would try to expand it.
+fn commit_time_wrapper(command: Vec<String>) -> Vec<String> {
+    let mut wrapped = vec![
+        "sh".into(),
+        "-c".into(),
+        format!(
+            "{{ read -r t || [ -n \"$t\" ]; }} < {META_DIR}/{} && exec \"$0\" \"$@\" \"--opt=build-arg:{}=$t\"",
+            keys::META_COMMIT_TIME,
+            keys::ARG_COMMIT_TIME
+        ),
+    ];
+    wrapped.extend(command);
+    wrapped
 }
 
 fn context_dir(context: &str) -> String {
@@ -455,6 +476,11 @@ pub fn build_job(gi: &GitImage, cfg: &Config, p: &BuildParams) -> Job {
             ..Default::default()
         },
         Volume {
+            name: "meta".into(),
+            empty_dir: Some(EmptyDirVolumeSource::default()),
+            ..Default::default()
+        },
+        Volume {
             name: "push-auth".into(),
             secret: Some(SecretVolumeSource {
                 secret_name: Some(p.push_auth_secret.clone()),
@@ -483,6 +509,7 @@ pub fn build_job(gi: &GitImage, cfg: &Config, p: &BuildParams) -> Job {
         format!("--sha={}", p.sha),
         format!("--dest={WORKSPACE}"),
         format!("--context={}", k8s_literal(&gi.spec.build.context)),
+        format!("--meta-dir={META_DIR}"),
         "--log-format=json".into(),
     ];
     if let Some(tree) = &p.skip_if_tree {
@@ -491,6 +518,7 @@ pub fn build_job(gi: &GitImage, cfg: &Config, p: &BuildParams) -> Job {
     let mut clone_mounts = vec![
         mount("workspace", WORKSPACE, false),
         mount("tmp", "/tmp", false),
+        mount("meta", META_DIR, false),
     ];
     if let Some(sr) = &gi.spec.secret_ref {
         volumes.push(Volume {
@@ -535,6 +563,7 @@ pub fn build_job(gi: &GitImage, cfg: &Config, p: &BuildParams) -> Job {
     });
     let mut bk_mounts = vec![
         mount("workspace", WORKSPACE, true),
+        mount("meta", META_DIR, true),
         mount("push-auth", layout.docker_config_dir, true),
         VolumeMount {
             name: "build-config".into(),
@@ -584,7 +613,7 @@ pub fn build_job(gi: &GitImage, cfg: &Config, p: &BuildParams) -> Job {
     let mut buildkit = Container {
         name: "buildkit".into(),
         image: Some(layout.image.clone()),
-        command: Some(vec!["buildctl-daemonless.sh".into()]),
+        command: Some(commit_time_wrapper(vec!["buildctl-daemonless.sh".into()])),
         args: Some(args),
         env: Some(env),
         volume_mounts: Some(bk_mounts),
@@ -1017,7 +1046,10 @@ build:
         let cmd = bk.command.as_ref().unwrap();
         assert_eq!(&cmd[..2], &["sh".to_string(), "-c".to_string()]);
         assert!(cmd[2].contains("mount -t ext3 -o noatime /dev/buildkit-state /var/lib/buildkit"));
-        assert_eq!(cmd[3], "buildctl-daemonless.sh");
+        // The mount runs first, then the commit-time wrapper, then BuildKit.
+        assert_eq!(&cmd[3..5], &["sh".to_string(), "-c".to_string()]);
+        assert!(cmd[5].contains("GITIMAGE_COMMIT_TIME"));
+        assert_eq!(cmd[6], "buildctl-daemonless.sh");
         // The isolation check exercises the same volume.
         let check = crate::isolation::check_job(&cfg, "gitimage-system")
             .spec

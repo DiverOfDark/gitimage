@@ -48,8 +48,12 @@ spec:
             - "--opt=label:org.opencontainers.image.source=https://github.com/you/myapp.git"
             - "--opt=build-arg:NODE_ENV=production $$(HOME)"
             - "--opt=build-arg:TOKEN=$(GITIMAGE_ARG_TOKEN)"
+            - "--opt=build-arg:GITIMAGE_REVISION=3f2c9e1aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
             - "--secret=id=npmrc,src=/run/secrets/npmrc"
           command:
+            - sh
+            - "-c"
+            - "{ read -r t || [ -n \"$t\" ]; } < /etc/gitimage/meta/commit-time && exec \"$0\" \"$@\" \"--opt=build-arg:GITIMAGE_COMMIT_TIME=$t\""
             - buildctl-daemonless.sh
           env:
             - name: GITIMAGE_ARG_TOKEN
@@ -75,6 +79,9 @@ spec:
           volumeMounts:
             - mountPath: /workspace
               name: workspace
+              readOnly: true
+            - mountPath: /etc/gitimage/meta
+              name: meta
               readOnly: true
             - mountPath: /home/user/.docker
               name: push-auth
@@ -102,6 +109,7 @@ spec:
             - "--sha=3f2c9e1aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
             - "--dest=/workspace"
             - "--context=services/api"
+            - "--meta-dir=/etc/gitimage/meta"
             - "--log-format=json"
             - "--skip-if-tree=tree123"
             - "--credentials-dir=/etc/gitimage/git"
@@ -132,6 +140,9 @@ spec:
             - mountPath: /tmp
               name: tmp
               readOnly: false
+            - mountPath: /etc/gitimage/meta
+              name: meta
+              readOnly: false
             - mountPath: /etc/gitimage/git
               name: git-credentials
               readOnly: true
@@ -144,6 +155,8 @@ spec:
           name: workspace
         - emptyDir: {}
           name: tmp
+        - emptyDir: {}
+          name: meta
         - name: push-auth
           secret:
             items:

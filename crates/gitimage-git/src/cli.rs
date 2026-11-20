@@ -1,5 +1,7 @@
 //! `gitimage clone`: the build Job's init container. Fetches one commit, checks it out unless
-//! the context tree is unchanged, and reports the tree id in the termination log.
+//! the context tree is unchanged, and reports the tree id in the termination log. With
+//! `--meta-dir`, also writes the commit's metadata there for the BuildKit container, which
+//! passes it to the build as `GITIMAGE_*` build args.
 
 use std::path::PathBuf;
 
@@ -26,6 +28,10 @@ pub struct CloneArgs {
     /// `password` as files).
     #[arg(long)]
     pub credentials_dir: Option<PathBuf>,
+    /// Directory to write `commit-time` (committer time, unix seconds) into. Kept outside
+    /// the build context so it never changes what the Dockerfile sees.
+    #[arg(long)]
+    pub meta_dir: Option<PathBuf>,
     /// Where to write `cloned <tree>` / `unchanged <tree>`.
     #[arg(long, default_value = "/dev/termination-log")]
     pub termination_log: PathBuf,
@@ -48,6 +54,11 @@ pub async fn run_clone_cli(args: CloneArgs) -> anyhow::Result<i32> {
             skip_if_tree: args.skip_if_tree.clone(),
         })
         .await?;
+    if let Some(dir) = &args.meta_dir {
+        let path = dir.join(gitimage_api::keys::META_COMMIT_TIME);
+        std::fs::write(&path, format!("{}\n", outcome.commit_time))
+            .map_err(|e| anyhow::anyhow!("write {}: {e}", path.display()))?;
+    }
     let (word, code) = if outcome.unchanged {
         ("unchanged", gitimage_api::keys::CLONE_EXIT_UNCHANGED)
     } else {

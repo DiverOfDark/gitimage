@@ -229,6 +229,8 @@ async fn gitea_end_to_end() {
     std::fs::copy(&keys[1], secret.join("identity")).unwrap();
     std::fs::copy(fx.get("KNOWN_HOSTS"), secret.join("known_hosts")).unwrap();
     let log = work.path().join("termination-log");
+    let meta = work.path().join("meta");
+    std::fs::create_dir(&meta).unwrap();
     let args = CloneArgs {
         url: fx.ssh_url(),
         sha: sha.clone(),
@@ -236,12 +238,17 @@ async fn gitea_end_to_end() {
         context: "services/api".into(),
         skip_if_tree: None,
         credentials_dir: Some(secret.clone()),
+        meta_dir: Some(meta.clone()),
         termination_log: log.clone(),
     };
     assert_eq!(run_clone_cli(args.clone()).await.unwrap(), 0);
     assert_eq!(
         std::fs::read_to_string(&log).unwrap(),
         format!("cloned {context_tree}")
+    );
+    assert_eq!(
+        std::fs::read_to_string(meta.join(gitimage_api::keys::META_COMMIT_TIME)).unwrap(),
+        format!("{}\n", fx.get("COMMIT_TIME"))
     );
     assert_checkout(&args.dest);
     let code = run_clone_cli(CloneArgs {

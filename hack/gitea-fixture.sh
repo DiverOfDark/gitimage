@@ -10,7 +10,7 @@
 # (the test calls this script itself and skips if no container runtime is found).
 #
 # <workdir>/env (KEY=VALUE lines): HTTP, SSH_PORT, USER, PASSWORD, TOKEN, REPO, SHA,
-# ROOT_TREE, CONTEXT, CONTEXT_TREE, KEYS (identity files), KNOWN_HOSTS, KNOWN_HOSTS_HASHED,
+# ROOT_TREE, CONTEXT, CONTEXT_TREE, COMMIT_TIME, KEYS (identity files), KNOWN_HOSTS, KNOWN_HOSTS_HASHED,
 # CA (the https CA certificate). Needs git, openssl, ssh-keygen, ssh-keyscan, curl on the host.
 set -euo pipefail
 
@@ -137,6 +137,7 @@ TIP=$(git -C "$src" rev-parse HEAD)
 ROOT_TREE=$(git -C "$src" rev-parse "$sha^{tree}")
 CONTEXT=services/api
 CONTEXT_TREE=$(git -C "$src" rev-parse "$sha:services/api")
+COMMIT_TIME=$(git -C "$src" log -1 --format=%ct "$sha")
 KEYS=${keys# }
 KNOWN_HOSTS=$work/known_hosts
 KNOWN_HOSTS_HASHED=$work/known_hosts_hashed

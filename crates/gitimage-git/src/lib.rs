@@ -76,4 +76,6 @@ pub struct CloneOutcome {
     /// Git tree id of `context` at `sha`.
     pub context_tree: String,
     pub unchanged: bool,
+    /// Committer time of `sha`, unix seconds.
+    pub commit_time: i64,
 }

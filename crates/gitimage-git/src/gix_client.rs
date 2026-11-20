@@ -272,6 +272,7 @@ fn fetch_and_checkout(
         .try_into_commit()
         .map_err(|_| GitError::Remote(format!("{sha} is not a commit")))?;
     let root = commit.tree_id().map_err(local_err)?.detach();
+    let commit_time = commit.time().map_err(local_err)?.seconds;
     let context_tree = context_tree_id(&repo, root, components, &req.context)?;
 
     if req.skip_if_tree.as_deref() == Some(context_tree.as_str()) {
@@ -279,12 +280,14 @@ fn fetch_and_checkout(
         return Ok(CloneOutcome {
             context_tree,
             unchanged: true,
+            commit_time,
         });
     }
     checkout(&repo, root)?;
     Ok(CloneOutcome {
         context_tree,
         unchanged: false,
+        commit_time,
     })
 }
 
@@ -420,7 +423,9 @@ mod tests {
             out,
             CloneOutcome {
                 context_tree: tree.into(),
-                unchanged: false
+                unchanged: false,
+                // `git log -1 --format=%ct <sha>`
+                commit_time: 1793705822,
             }
         );
         let dest = &req.dest;
@@ -444,6 +449,7 @@ mod tests {
         };
         let out = GixClient.clone_commit(skip.clone()).await.unwrap();
         assert!(out.unchanged);
+        assert_eq!(out.commit_time, 1793705822);
         assert_eq!(std::fs::read_dir(&skip.dest).unwrap().count(), 0);
     }
 }

@@ -32,6 +32,14 @@ pub const FIELD_MANAGER: &str = "gitimage-controller";
 /// Exit code of `gitimage clone` when the context tree is unchanged (F7 fallback).
 pub const CLONE_EXIT_UNCHANGED: i32 = 3;
 
+/// File in the clone's `--meta-dir` holding the commit's committer time (unix seconds).
+pub const META_COMMIT_TIME: &str = "commit-time";
+
+/// Build arg set to the full commit sha on every build.
+pub const ARG_REVISION: &str = "GITIMAGE_REVISION";
+/// Build arg set to the commit's committer time (unix seconds) on every build.
+pub const ARG_COMMIT_TIME: &str = "GITIMAGE_COMMIT_TIME";
+
 /// Returns the container name if `key` is a `gitimage.dev/image.<container>` annotation.
 pub fn image_annotation_container(key: &str) -> Option<&str> {
     key.strip_prefix(IMAGE_ANNOTATION_PREFIX)
