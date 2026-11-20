@@ -1,8 +1,10 @@
 # Isolation modes
 
 `buildPolicy.isolation.mode` is required and has no default. At startup the controller runs a
-check Job with exactly the build pod's isolation settings (`buildctl-daemonless.sh debug
-workers`); if it fails, the controller exits with code 3 and logs `IsolationUnavailable`.
+check Job with exactly the build pod's isolation settings: BuildKit lists its workers, then
+builds a two-layer image (from its own busybox, nothing is pulled) whose second layer
+hard-links a file of the first. If either fails, the controller exits with code 3 and logs
+`IsolationUnavailable`; a failed hard link names the fix (gVisor: `snapshotter: native`).
 Nothing falls back to a weaker mode, and nothing builds.
 
 | Mode | Values | Build pod | Verified in CI |
@@ -25,6 +27,8 @@ routinely: `apt-get install` upgrading a package the base image already has stop
 `unable to make backup link of '...' before installing new version: No such device`. The
 `native` snapshotter copies layers instead of stacking them; builds are slower and use more
 disk, but every filesystem operation works. (`fuse-overlayfs` does not run in gVisor at all.)
+The isolation check builds exactly this case, so gVisor without `native` stops the controller
+at startup rather than failing the first build that upgrades a package.
 
 **Sysbox and `rootfulInSandbox`.** [Sysbox](https://github.com/nestybox/sysbox) runs the pod in
 a user namespace, gives root in the pod its capabilities there and virtualizes procfs/sysfs, so

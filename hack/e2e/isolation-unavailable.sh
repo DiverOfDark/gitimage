@@ -21,6 +21,33 @@ for i in $(seq 1 90); do
   done
   sleep 2
 done
+if [ -z "$ok" ]; then
+  ./hack/e2e/install.sh "$STORAGE" "$RESTORE" >/dev/null
+  echo "FAIL: no controller exited 3 with IsolationUnavailable"; exit 1
+fi
+echo "ok: $ok exited 3 with IsolationUnavailable"
+
+# gVisor without the native snapshotter cannot hard-link a lower layer's file; the check's
+# build probe must catch that at startup instead of the first apt-get upgrade in a build.
+if [ "$RESTORE" = gvisor ]; then
+  helm upgrade gitimage charts/gitimage -n "$NS" --reuse-values \
+    --set buildPolicy.isolation.runtimeClassName=gvisor --set buildPolicy.isolation.snapshotter=auto >/dev/null
+  ok=""
+  for i in $(seq 1 120); do
+    for p in $(kubectl -n "$NS" get pods -l app.kubernetes.io/component=controller -o name); do
+      code=$(kubectl -n "$NS" get "$p" -o jsonpath='{.status.containerStatuses[0].lastState.terminated.exitCode}' 2>/dev/null || true)
+      if [ "$code" = "3" ] && kubectl -n "$NS" logs "$p" --previous 2>/dev/null | grep -q "hard links to files of a lower layer fail"; then
+        ok=$p; break 2
+      fi
+    done
+    sleep 3
+  done
+  if [ -z "$ok" ]; then
+    ./hack/e2e/install.sh "$STORAGE" "$RESTORE" >/dev/null
+    echo "FAIL: gVisor with snapshotter auto passed the isolation check"; exit 1
+  fi
+  echo "ok: $ok exited 3: gVisor without snapshotter native fails the hard-link probe"
+fi
+
 ./hack/e2e/install.sh "$STORAGE" "$RESTORE" >/dev/null
-if [ -z "$ok" ]; then echo "FAIL: no controller exited 3 with IsolationUnavailable"; exit 1; fi
-echo "ok: $ok exited 3 with IsolationUnavailable; reinstalled $STORAGE/$RESTORE"
+echo "reinstalled $STORAGE/$RESTORE"
