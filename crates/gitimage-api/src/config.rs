@@ -250,9 +250,10 @@ pub struct Isolation {
     /// (`sysbox-runc`). Build pods then fit the Pod Security `baseline` level.
     #[serde(default)]
     pub rootful_in_sandbox: bool,
-    /// BuildKit's snapshotter. gVisor needs `native`: its overlay answers `ENODEV` to a hard
-    /// link of a file in a lower layer, so e.g. `apt-get install` upgrading a package of the
-    /// base image fails with "unable to make backup link ... No such device".
+    /// BuildKit's snapshotter. gVisor needs `native`: it cannot copy up a lower-layer file that
+    /// a process has mapped when the layers live on a volume (`ENODEV`), so e.g. `apt-get`
+    /// upgrading a library it has loaded fails with "unable to make backup link ... No such
+    /// device".
     #[serde(default)]
     pub snapshotter: Snapshotter,
 }

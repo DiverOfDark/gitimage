@@ -25,9 +25,9 @@ buildPolicy:
     # (hostUsers: false). For Sysbox (runtimeClassName: sysbox-runc), which virtualizes
     # procfs/sysfs; build pods then pass Pod Security baseline. Excludes privilegedInSandbox.
     rootfulInSandbox: false
-    # BuildKit snapshotter: auto | overlayfs | native. gVisor needs native: its overlay cannot
-    # hard-link a file of a lower layer (ENODEV), which breaks e.g. apt upgrading a package of
-    # the base image. native copies layers instead: slower, more disk, works everywhere.
+    # BuildKit snapshotter: auto | overlayfs | native. gVisor needs native: it cannot copy up a
+    # lower-layer file a process has mapped on a volume (ENODEV), which breaks e.g. apt
+    # upgrading a library it has loaded. native copies layers instead: slower, more disk.
     snapshotter: auto
   egress:
     allowInternet: true

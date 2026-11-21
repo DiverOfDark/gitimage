@@ -3,8 +3,9 @@
 `buildPolicy.isolation.mode` is required and has no default. At startup the controller runs a
 check Job with exactly the build pod's isolation settings: BuildKit lists its workers, then
 builds a two-layer image (from its own busybox, nothing is pulled) whose second layer
-hard-links a file of the first. If either fails, the controller exits with code 3 and logs
-`IsolationUnavailable`; a failed hard link names the fix (gVisor: `snapshotter: native`).
+hard-links a file of the first while it is mapped. If either fails, the controller exits with
+code 3 and logs `IsolationUnavailable`; a failed hard link names the fix (gVisor:
+`snapshotter: native`).
 Nothing falls back to a weaker mode, and nothing builds.
 
 | Mode | Values | Build pod | Verified in CI |
@@ -21,14 +22,21 @@ guest*. That is only safe when the runtime keeps privileged in the guest: contai
 `privileged_without_host_devices = true` for the Kata handler (kata-deploy sets it). Check your
 node's containerd config before enabling it.
 
-**gVisor and `snapshotter: native`.** gVisor's overlay answers `ENODEV` to a hard link of a
-file that lives in a lower layer. Any build that does that fails, and package managers do it
-routinely: `apt-get install` upgrading a package the base image already has stops with
-`unable to make backup link of '...' before installing new version: No such device`. The
-`native` snapshotter copies layers instead of stacking them; builds are slower and use more
-disk, but every filesystem operation works. (`fuse-overlayfs` does not run in gVisor at all.)
-The isolation check builds exactly this case, so gVisor without `native` stops the controller
-at startup rather than failing the first build that upgrades a package.
+**gVisor and `snapshotter: native`.** BuildKit's overlay layers live on the build pod's state
+volume, and gVisor treats volumes as shared with the outside world. In that mode it cannot copy
+up a lower-layer file that a running process has memory-mapped: the copy-up fails with `ENODEV`.
+Package managers hit this routinely, e.g. `apt-get` upgrading a library that `apt-get` itself
+has loaded stops with `unable to make backup link of '...libcrypto.so.3' before installing new
+version: No such device`. The `native` snapshotter copies layers instead of stacking them, so
+nothing is copied up; every operation works, but builds are slower and use more disk (a large
+multi-stage build took about twice as long as under Kata). Things that do not help (tested with
+runsc release-20261116.0): `file-access-mounts=exclusive` on the runsc handler avoids the
+`ENODEV` but crashes the whole sandbox when the copying process has the file mapped itself;
+per-pod gVisor mount hints turn the state `emptyDir` into a RAM-backed tmpfs; ephemeral PVCs
+reach gVisor as the same kind of volume (filesystem mode) or not at all (block mode: no ext4);
+`fuse-overlayfs` does not run in gVisor. For heavy builds prefer Kata. The isolation check
+builds exactly this case, so gVisor without `native` stops the controller at startup rather
+than failing the first build that upgrades a package.
 
 **Sysbox and `rootfulInSandbox`.** [Sysbox](https://github.com/nestybox/sysbox) runs the pod in
 a user namespace, gives root in the pod its capabilities there and virtualizes procfs/sysfs, so

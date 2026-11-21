@@ -38,10 +38,11 @@ pub fn check_key(cfg: &Config) -> String {
 const HARDLINK_FAILED: &str = "gitimage: hard links to files of a lower layer fail in this sandbox (gVisor: set buildPolicy.isolation.snapshotter: native)";
 
 /// The check: BuildKit starts and lists its workers, then builds a two-layer image whose second
-/// layer hard-links a file of the first. That is what `apt-get` does when it upgrades a package
-/// of the base image, and gVisor's overlay refuses it (`ENODEV`) unless BuildKit uses the native
-/// snapshotter. The image is assembled from the BuildKit image's own busybox and musl, so the
-/// check pulls nothing.
+/// layer hard-links a file of the first with busybox `ln` - so the linked file is also mapped by
+/// the running process. That is what `apt-get` does when it upgrades a library it has loaded,
+/// and gVisor refuses it (`ENODEV`: no copy-up of a mapped file on a shared volume) unless
+/// BuildKit uses the native snapshotter. The image is assembled from the BuildKit image's own
+/// busybox and musl, so the check pulls nothing.
 const CHECK_SCRIPT: &str = r#"set -eu
 buildctl-daemonless.sh debug workers
 ctx=$(mktemp -d)
