@@ -808,6 +808,11 @@ async fn persistent_state_keeps_cache_mounts() -> anyhow::Result<()> {
         .get("app-buildkit")
         .await?;
     assert_eq!(pvc.metadata.owner_references.unwrap()[0].kind, "GitImage");
+    // hack/e2e/install.sh sets build.stateVolume.labels on these legs.
+    assert_eq!(
+        pvc.metadata.labels.unwrap_or_default()["velero.io/exclude-from-backup"],
+        "true"
+    );
 
     let sha2 = gitea
         .commit(&repo, "main", &[("Dockerfile", &df("two"))], "two")

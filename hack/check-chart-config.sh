@@ -31,7 +31,9 @@ check --set buildPolicy.isolation.mode=userns --set storage.registry.url=r/b --s
   --set ui.auth.oidc.issuer=https://auth.example.com --set ui.auth.oidc.clientID=123456 \
   --set ui.auth.oidc.existingSecret=gitimage-oidc
 check --set buildPolicy.isolation.mode=userns --set storage.registry.url=r/b --set storage.registry.pushSecret=p \
-  --set build.stateVolume.persistent.size=20Gi --set build.stateVolume.persistent.storageClassName=local-path
+  --set build.stateVolume.persistent.size=20Gi --set build.stateVolume.persistent.storageClassName=local-path \
+  --set-string 'build.stateVolume.labels.velero\.io/exclude-from-backup=true' \
+  --set-string 'build.stateVolume.annotations.k8up\.io/backup=false'
 check --set buildPolicy.isolation.mode=runtimeClass --set buildPolicy.isolation.runtimeClassName=kata \
   --set buildPolicy.isolation.privilegedInSandbox=true --set storage.registry.url=r/b --set storage.registry.pushSecret=p \
   --set build.stateVolume.persistent.size=20Gi --set build.stateVolume.block.fsType=ext4

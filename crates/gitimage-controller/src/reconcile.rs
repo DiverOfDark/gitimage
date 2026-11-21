@@ -459,31 +459,59 @@ async fn ensure_state_claim(ctx: &Ctx, gi: &GitImage) -> Result<bool, Error> {
     if have.metadata.deletion_timestamp.is_some() {
         return Ok(false);
     }
-    let ours = have
-        .owner_references()
+    let owners = have.owner_references();
+    let ours = owners
         .iter()
         .any(|o| Some(&o.uid) == gi.meta().uid.as_ref());
-    if !ours {
+    // Restored from a backup, or left by a deleted and recreated GitImage of the same name.
+    let stale = !ours
+        && owners
+            .iter()
+            .any(|o| o.kind == "GitImage" && o.name == gi.name_any());
+    if !ours && !stale {
         return Err(Error::Other(format!(
             "PersistentVolumeClaim {name} exists and does not belong to this GitImage; \
              delete or rename it to use build.stateVolume.persistent"
         )));
     }
     let key = |p: &PersistentVolumeClaim| p.annotations().get(job::STATE_KEY_ANNOTATION).cloned();
-    if key(&have) == key(&want) {
+    if ours && key(&have) == key(&want) {
+        // Labels and annotations added to the config since (backup exclusions) reach
+        // existing PVCs too.
+        let missing = |want: &std::collections::BTreeMap<String, String>,
+                       have: &std::collections::BTreeMap<String, String>| {
+            want.iter()
+                .filter(|(k, v)| have.get(*k) != Some(*v))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect::<std::collections::BTreeMap<_, _>>()
+        };
+        let labels = missing(want.labels(), have.labels());
+        let annotations = missing(want.annotations(), have.annotations());
+        if !labels.is_empty() || !annotations.is_empty() {
+            let patch = serde_json::json!({
+                "metadata": { "labels": labels, "annotations": annotations }
+            });
+            api.patch(&name, &PatchParams::default(), &Patch::Merge(&patch))
+                .await?;
+        }
         return Ok(true);
     }
-    tracing::info!(namespace = %ns, pvc = %name, from = ?key(&have), to = ?key(&want), "recreating BuildKit state volume");
+    let why = if stale {
+        "it belongs to an earlier GitImage of this name".to_string()
+    } else {
+        format!(
+            "made for {}, now {}",
+            key(&have).unwrap_or_default(),
+            key(&want).unwrap_or_default()
+        )
+    };
+    tracing::info!(namespace = %ns, pvc = %name, reason = %why, "recreating BuildKit state volume");
     publish(
         ctx,
         gi,
         EventType::Normal,
         "StateVolumeRecreated",
-        format!(
-            "Recreating {name}: made for {}, now {}",
-            key(&have).unwrap_or_default(),
-            key(&want).unwrap_or_default()
-        ),
+        format!("Recreating {name}: {why}"),
     )
     .await;
     match api.delete(&name, &DeleteParams::default()).await {

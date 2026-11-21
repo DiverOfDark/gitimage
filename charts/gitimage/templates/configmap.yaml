@@ -73,6 +73,12 @@ data:
         {{- with .Values.build.stateVolume.persistent }}
         persistent: {{ toJson . }}
         {{- end }}
+        {{- with .Values.build.stateVolume.labels }}
+        labels: {{ toJson . }}
+        {{- end }}
+        {{- with .Values.build.stateVolume.annotations }}
+        annotations: {{ toJson . }}
+        {{- end }}
     network:
       clusterCIDRs: {{ toJson .Values.network.clusterCIDRs }}
     node:
