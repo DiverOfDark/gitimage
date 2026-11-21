@@ -45,6 +45,10 @@ rules:
   - apiGroups: [""]
     resources: [configmaps]
     verbs: [get, create, update, patch]
+  - apiGroups: [""]
+    # build.stateVolume.persistent: one BuildKit state PVC per GitImage.
+    resources: [persistentvolumeclaims]
+    verbs: [get, create, delete]
   - apiGroups: [networking.k8s.io]
     resources: [networkpolicies]
     verbs: [get, create, update, patch]

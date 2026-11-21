@@ -5,7 +5,7 @@ use std::time::Duration;
 use e2e::*;
 use gitimage_api::{BuildOutcome, GitImage};
 use k8s_openapi::api::apps::v1::Deployment;
-use k8s_openapi::api::core::v1::{Pod, ResourceQuota, Secret};
+use k8s_openapi::api::core::v1::{PersistentVolumeClaim, Pod, ResourceQuota, Secret};
 use kube::api::{Patch, PatchParams, PostParams};
 
 const BUILD: Duration = Duration::from_secs(420);
@@ -736,5 +736,149 @@ async fn ui_shows_status_workloads_and_build_log() -> anyhow::Result<()> {
     assert!(log.contains("\"phase\":\"Succeeded\""), "{log}");
     let after: serde_json::Value = serde_json::from_str(log.lines().last().unwrap_or_default())?;
     assert_eq!(after["gitimage"]["state"], "Ready", "{after}");
+    Ok(())
+}
+
+/// Legs installed with `E2E_PERSISTENT=1` (`build.stateVolume.persistent`); elsewhere the
+/// persistent tests pass without doing anything.
+fn persistent() -> bool {
+    std::env::var("E2E_PERSISTENT").is_ok_and(|v| !v.is_empty())
+}
+
+/// Runs a Deployment of GitImage `app` and returns the log of its pod running `image`.
+async fn log_of_image(ns: &TestNs, image: &str) -> anyhow::Result<String> {
+    create_deployment(ns, "web", "app").await?;
+    let pod = wait_for(
+        "pod running the image",
+        Duration::from_secs(180),
+        || async {
+            let pods = ns
+                .api::<Pod>()
+                .list(&kube::api::ListParams::default().labels("app=web"))
+                .await?;
+            Ok(pods.items.into_iter().find(|p| {
+                p.status.as_ref().and_then(|s| s.phase.as_deref()) == Some("Running")
+                    && p.spec
+                        .as_ref()
+                        .is_some_and(|s| s.containers[0].image.as_deref() == Some(image))
+            }))
+        },
+    )
+    .await?;
+    let name = pod.metadata.name.unwrap_or_default();
+    wait_for("pod log", Duration::from_secs(30), || async {
+        let log = ns.api::<Pod>().logs(&name, &Default::default()).await?;
+        Ok((!log.trim().is_empty()).then_some(log))
+    })
+    .await
+}
+
+/// `build.stateVolume.persistent`: the GitImage's PVC keeps a `RUN --mount=type=cache` between
+/// builds. The registry cache never carries cache mounts, so the second build seeing the first
+/// one's file proves the state survived.
+#[tokio::test]
+#[ignore]
+async fn persistent_state_keeps_cache_mounts() -> anyhow::Result<()> {
+    if !persistent() {
+        return Ok(());
+    }
+    let client = client().await?;
+    let ns = TestNs::new(&client, "e2e-state").await?;
+    let gitea = Gitea::default();
+    let repo = unique("state");
+    gitea.create_repo(&repo, false).await?;
+    // The RUN line differs per commit, so it runs again; only the cache mount carries over.
+    let df = |msg: &str| {
+        format!(
+            "FROM docker.io/library/busybox:1.37\nRUN --mount=type=cache,target=/cache sh -c '[ -f /cache/first ] || echo {msg} > /cache/first; cp /cache/first /first'\nCMD [\"sh\", \"-c\", \"cat /first; sleep 3600\"]\n"
+        )
+    };
+    let sha1 = gitea
+        .commit(&repo, "main", &[("Dockerfile", &df("one"))], "one")
+        .await?;
+    create_gitimage(
+        &ns,
+        "app",
+        &format!("url: {}\ninterval: 5s", Gitea::https_url(&repo)),
+    )
+    .await?;
+    wait_built(&ns, "app", &sha1, BUILD).await?;
+    let pvc = ns
+        .api::<PersistentVolumeClaim>()
+        .get("app-buildkit")
+        .await?;
+    assert_eq!(pvc.metadata.owner_references.unwrap()[0].kind, "GitImage");
+
+    let sha2 = gitea
+        .commit(&repo, "main", &[("Dockerfile", &df("two"))], "two")
+        .await?;
+    let gi = wait_built(&ns, "app", &sha2, BUILD).await?;
+    let image = gi.status.and_then(|s| s.image).unwrap();
+    let log = log_of_image(&ns, &image).await?;
+    assert_eq!(
+        log.trim(),
+        "one",
+        "the cache mount of the first build is gone"
+    );
+    Ok(())
+}
+
+/// With `onNewCommit: cancel` the next build waits until the cancelled build's pod has let go
+/// of the state volume; starting at once, its buildkitd would find the state dir locked.
+#[tokio::test]
+#[ignore]
+async fn persistent_state_waits_for_cancelled_build() -> anyhow::Result<()> {
+    if !persistent() {
+        return Ok(());
+    }
+    let client = client().await?;
+    let ns = TestNs::new(&client, "e2e-cancel").await?;
+    let gitea = Gitea::default();
+    let repo = unique("cancel");
+    gitea.create_repo(&repo, false).await?;
+    let slow = "FROM docker.io/library/busybox:1.37\nRUN sleep 600\nCMD [\"sleep\", \"3600\"]\n";
+    let sha1 = gitea
+        .commit(&repo, "main", &[("Dockerfile", slow)], "slow")
+        .await?;
+    create_gitimage(
+        &ns,
+        "app",
+        &format!(
+            "url: {}\ninterval: 5s\nbuild: {{ onNewCommit: cancel }}",
+            Gitea::https_url(&repo)
+        ),
+    )
+    .await?;
+    wait_for("slow build running", BUILD, || async {
+        let pods = ns
+            .api::<Pod>()
+            .list(&kube::api::ListParams::default().labels(&format!(
+                "gitimage.dev/name=app,gitimage.dev/revision={sha1}"
+            )))
+            .await?;
+        Ok(pods
+            .items
+            .iter()
+            .any(|p| p.status.as_ref().and_then(|s| s.phase.as_deref()) == Some("Running"))
+            .then_some(()))
+    })
+    .await?;
+
+    let sha2 = gitea
+        .commit(
+            &repo,
+            "main",
+            &[("Dockerfile", &dockerfile("fast"))],
+            "fast",
+        )
+        .await?;
+    let gi = wait_built(&ns, "app", &sha2, BUILD).await?;
+    let st = gi.status.unwrap_or_default();
+    assert_eq!(
+        st.record(&sha1).map(|r| r.outcome),
+        Some(BuildOutcome::Superseded),
+        "{:?}",
+        st.builds
+    );
     Ok(())
 }

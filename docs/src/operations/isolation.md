@@ -73,7 +73,8 @@ build:
       fsType: ext4                   # or ext3
 ```
 
-Each build pod gets a fresh ephemeral PVC (deleted with the pod). A `format-state` init container
+Each build pod gets a fresh ephemeral PVC (deleted with the pod), or with
+[`persistent`](configuration.md#persistent-build-cache) the GitImage's own PVC, formatted once. A `format-state` init container
 (`formatImage`, default `debian:bookworm-slim`) runs `mkfs`, and the BuildKit container mounts
 the device at its state dir before starting, so this needs `privileged` or
 `privilegedInSandbox`. The isolation check runs with the same volume. `medium: Memory` (tmpfs)

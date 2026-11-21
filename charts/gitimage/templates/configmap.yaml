@@ -68,9 +68,10 @@ data:
         sizeLimit: {{ . | quote }}
         {{- end }}
         {{- with .Values.build.stateVolume.block }}
-        {{- if .size }}
         block: {{ toJson . }}
         {{- end }}
+        {{- with .Values.build.stateVolume.persistent }}
+        persistent: {{ toJson . }}
         {{- end }}
     network:
       clusterCIDRs: {{ toJson .Values.network.clusterCIDRs }}
