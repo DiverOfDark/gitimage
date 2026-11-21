@@ -159,6 +159,27 @@ impl Config {
                 "build.stateVolume.medium must be \"\" or \"Memory\"".into(),
             ));
         }
+        if let Some(p) = &sv.persistent {
+            if !sv.medium.is_empty() || sv.size_limit.is_some() {
+                return Err(ConfigError::Invalid(
+                    "build.stateVolume.persistent excludes medium and sizeLimit".into(),
+                ));
+            }
+            if quantity_bytes(&p.size).is_none_or(|b| b < 1 << 30) {
+                return Err(ConfigError::Invalid(
+                    "build.stateVolume.persistent.size must be a quantity of at least 1Gi, e.g. 20Gi"
+                        .into(),
+                ));
+            }
+            if let Some(b) = &sv.block
+                && (!b.size.is_empty() || b.storage_class_name.is_some())
+            {
+                return Err(ConfigError::Invalid(
+                    "with build.stateVolume.persistent, set size and storageClassName there, not in block"
+                        .into(),
+                ));
+            }
+        }
         if let Some(b) = &sv.block {
             if !sv.medium.is_empty() || sv.size_limit.is_some() {
                 return Err(ConfigError::Invalid(
@@ -170,7 +191,7 @@ impl Config {
                     "build.stateVolume.block.fsType must be ext3 or ext4".into(),
                 ));
             }
-            if b.size.is_empty() {
+            if b.size.is_empty() && sv.persistent.is_none() {
                 return Err(ConfigError::Invalid(
                     "build.stateVolume.block.size is required".into(),
                 ));
@@ -448,6 +469,59 @@ pub struct StateVolume {
     /// disk, so the state lives on a real ext3/ext4 filesystem rather than a virtiofs share.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub block: Option<BlockStateVolume>,
+    /// One PVC per GitImage (`<name>-buildkit`), kept between its builds, so BuildKit's local
+    /// cache and `RUN --mount=type=cache` survive. With `block`, the PVC is `volumeMode: Block`
+    /// and formatted only when it holds no filesystem yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub persistent: Option<PersistentStateVolume>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PersistentStateVolume {
+    /// Requested size, e.g. `20Gi`. BuildKit's garbage collection keeps its state within 80%
+    /// of it.
+    pub size: String,
+    /// StorageClass of the PVCs; the default class if unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage_class_name: Option<String>,
+}
+
+impl StateVolume {
+    /// Size and StorageClass of the PVC backing BuildKit's state, if it is one.
+    pub fn claim(&self) -> Option<(&str, Option<&str>)> {
+        match (&self.persistent, &self.block) {
+            (Some(p), _) => Some((&p.size, p.storage_class_name.as_deref())),
+            (None, Some(b)) => Some((&b.size, b.storage_class_name.as_deref())),
+            (None, None) => None,
+        }
+    }
+}
+
+/// Bytes in a Kubernetes quantity such as `20Gi`, `500M` or `1.5Ti`; `None` if unparsable.
+pub fn quantity_bytes(q: &str) -> Option<u64> {
+    let q = q.trim();
+    let split = q
+        .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+        .unwrap_or(q.len());
+    let (num, suffix) = q.split_at(split);
+    let num: f64 = num.parse().ok()?;
+    let mult: f64 = match suffix {
+        "" => 1.0,
+        "k" => 1e3,
+        "M" => 1e6,
+        "G" => 1e9,
+        "T" => 1e12,
+        "P" => 1e15,
+        "Ki" => 1024.0,
+        "Mi" => 1024f64.powi(2),
+        "Gi" => 1024f64.powi(3),
+        "Ti" => 1024f64.powi(4),
+        "Pi" => 1024f64.powi(5),
+        _ => return None,
+    };
+    let bytes = num * mult;
+    (bytes.is_finite() && bytes >= 0.0).then_some(bytes as u64)
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -456,7 +530,8 @@ pub struct BlockStateVolume {
     /// StorageClass that supports `volumeMode: Block` (e.g. Ceph RBD); default class if unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub storage_class_name: Option<String>,
-    /// Requested size, e.g. `20Gi`.
+    /// Requested size, e.g. `20Gi`. Required unless `persistent` is set, which sizes the PVC.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub size: String,
     /// `ext4` (default) or `ext3`.
     #[serde(default = "default_fs_type")]
@@ -713,5 +788,43 @@ network: { clusterCIDRs: [10.244.0.0/16, 10.96.0.0/12] }
         let unprivileged = ok.replace(", privilegedInSandbox: true", "");
         let err = Config::from_yaml(&unprivileged).unwrap_err().to_string();
         assert!(err.contains("privilegedInSandbox"), "{err}");
+    }
+
+    #[test]
+    fn persistent_state_volume() {
+        let ok = format!(
+            "{HOMELAB}build: {{ stateVolume: {{ persistent: {{ size: 20Gi, storageClassName: local-path }} }} }}\n"
+        );
+        let sv = Config::from_yaml(&ok).unwrap().build.state_volume;
+        assert_eq!(sv.claim(), Some(("20Gi", Some("local-path"))));
+        for bad in ["512Mi", "lots", "\"\""] {
+            let cfg = ok.replace("20Gi", bad);
+            assert!(Config::from_yaml(&cfg).is_err(), "{bad}");
+        }
+        let memory = ok.replace("{ persistent:", "{ medium: Memory, persistent:");
+        assert!(Config::from_yaml(&memory).is_err());
+
+        let kata = HOMELAB.replace(
+            "runtimeClassName: kata }",
+            "runtimeClassName: kata, privilegedInSandbox: true }",
+        );
+        let block = format!(
+            "{kata}build: {{ stateVolume: {{ persistent: {{ size: 20Gi }}, block: {{ fsType: ext4 }} }} }}\n"
+        );
+        let sv = Config::from_yaml(&block).unwrap().build.state_volume;
+        assert_eq!(sv.claim(), Some(("20Gi", None)));
+        let sized_twice = block.replace("fsType: ext4", "size: 10Gi");
+        let err = Config::from_yaml(&sized_twice).unwrap_err().to_string();
+        assert!(err.contains("not in block"), "{err}");
+    }
+
+    #[test]
+    fn quantities() {
+        assert_eq!(quantity_bytes("20Gi"), Some(20 << 30));
+        assert_eq!(quantity_bytes("1.5Ti"), Some(3 << 39));
+        assert_eq!(quantity_bytes("500M"), Some(500_000_000));
+        assert_eq!(quantity_bytes("1024"), Some(1024));
+        assert_eq!(quantity_bytes("20GB"), None);
+        assert_eq!(quantity_bytes(""), None);
     }
 }

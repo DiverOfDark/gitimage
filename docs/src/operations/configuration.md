@@ -20,6 +20,7 @@
 | `build.labels`, `build.extraOpts`, `build.defaultResources` | | applied to every build |
 | `build.stateVolume.medium`, `.sizeLimit` | `""` | emptyDir for BuildKit's state; `Memory` = tmpfs |
 | `build.stateVolume.block` | unset | `{storageClassName, size, fsType: ext4\|ext3, formatImage}`: raw block ephemeral PVC per build, formatted and mounted in the pod (Kata on Talos) |
+| `build.stateVolume.persistent` | unset | `{size, storageClassName}`: one PVC per GitImage kept between builds; see [Persistent build cache](#persistent-build-cache) |
 | `build.buildkitdConfig` | `""` | appended to the build pods' `buildkitd.toml` (registry mirrors, private registries) |
 | `hooks.baseURL`, `hooks.ingress.*` | | push hooks |
 | `ui.enabled`, `ui.baseURL`, `ui.auth.*`, `ui.ingress.*` | `false` | [status UI](ui.md) on port 8082; `ui.auth.mode` is `none` or `oidc` |
@@ -29,6 +30,42 @@
 | `podMonitor.enabled` | `false` | Prometheus Operator PodMonitor |
 | `logFormat`, `logLevel` | `json`, `info,kube=warn` | |
 | `extraObjects` | `[]` | extra manifests installed with the release |
+
+## Persistent build cache
+
+By default every build starts BuildKit on an empty state volume and gets its cache from the
+registry (`build.cache`): a step that misses the cache first downloads every layer below it,
+and `RUN --mount=type=cache` (cargo, npm, ccache) always starts empty. With
+`build.stateVolume.persistent` each GitImage gets a PVC, `<name>-buildkit`, that its builds
+reuse:
+
+```yaml
+build:
+  stateVolume:
+    persistent:
+      size: 20Gi
+      storageClassName: local-path   # default class if unset
+```
+
+- **Cache.** Cache hits are local, nothing is downloaded, and cache mounts keep their contents.
+  BuildKit's garbage collection keeps the state within 80% of `size`. Keep `build.cache` on: it
+  fills a new PVC (first build, after a reset or a settings change).
+- **One build at a time.** The PVC is `ReadWriteOnce` and BuildKit locks its state dir, so with
+  `onNewCommit: cancel` the next build starts once the cancelled build's pod is gone (status:
+  `waiting for the cancelled build of <sha> to stop`).
+- **Placement.** Builds of a GitImage run where its PVC can be attached: its zone, or its node
+  with `local-path`. Network block storage adds a few seconds of attach time per build.
+- **Reset.** `kubectl delete pvc <name>-buildkit`; the controller creates a new one for the next
+  build. It also recreates the PVC itself when the isolation layout (rootful or rootless),
+  `size`, `storageClassName` or `block.fsType` change, with a `StateVolumeRecreated` Event.
+- **Block mode.** With `block` too, the PVC is `volumeMode: Block`, sized by `persistent`, and
+  formatted only when it holds no filesystem; `e2fsck -p` repairs it after a killed build. Give
+  `block` only `fsType`/`formatImage` then: `block: { fsType: ext4 }`.
+- **Security.** A commit can leave files in the state that later builds of the **same**
+  GitImage use, as it already can through the registry cache; other GitImages never see it.
+  Reset the PVC after building an untrusted commit.
+
+Not combinable with `medium` or `sizeLimit`. The PVC is deleted with its GitImage.
 
 ## extraObjects
 

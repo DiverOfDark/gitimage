@@ -9,10 +9,10 @@ use k8s_openapi::api::batch::v1::{Job, JobSpec};
 use k8s_openapi::api::core::v1::{
     AppArmorProfile, Capabilities, ConfigMap, ConfigMapVolumeSource, Container,
     EmptyDirVolumeSource, EnvVar, EnvVarSource, EphemeralVolumeSource, KeyToPath,
-    PersistentVolumeClaimSpec, PersistentVolumeClaimTemplate, PodSecurityContext, PodSpec,
-    PodTemplateSpec, ResourceRequirements, SeccompProfile, Secret, SecretKeySelector,
-    SecretVolumeSource, SecurityContext, Volume, VolumeDevice, VolumeMount,
-    VolumeResourceRequirements,
+    PersistentVolumeClaim, PersistentVolumeClaimSpec, PersistentVolumeClaimTemplate,
+    PersistentVolumeClaimVolumeSource, PodSecurityContext, PodSpec, PodTemplateSpec,
+    ResourceRequirements, SeccompProfile, Secret, SecretKeySelector, SecretVolumeSource,
+    SecurityContext, Volume, VolumeDevice, VolumeMount, VolumeResourceRequirements,
 };
 use k8s_openapi::api::networking::v1::{
     IPBlock, NetworkPolicy, NetworkPolicyEgressRule, NetworkPolicyPeer, NetworkPolicyPort,
@@ -274,78 +274,208 @@ fn resources(r: &Resources) -> Option<ResourceRequirements> {
 
 const STATE_VOLUME: &str = "buildkit-state";
 const STATE_DEVICE: &str = "/dev/buildkit-state";
+/// On the persistent state PVC: the settings it was created for (see [`state_claim_key`]).
+pub const STATE_KEY_ANNOTATION: &str = "gitimage.dev/state-volume";
+
+/// Name of a GitImage's persistent BuildKit state PVC (`build.stateVolume.persistent`).
+pub fn state_claim_name(gitimage: &str) -> String {
+    let base = &gitimage[..gitimage.len().min(253 - "-buildkit".len())];
+    format!("{base}-buildkit")
+}
+
+/// What a persistent state PVC was made for. The PVC is recreated when this changes: a rootful
+/// state dir is not writable by rootless BuildKit, and volume mode and class are immutable.
+pub fn state_claim_key(cfg: &Config) -> String {
+    let sv = &cfg.build.state_volume;
+    let (size, class) = sv.claim().unwrap_or_default();
+    let layout = if cfg.build_policy.isolation.rootful() {
+        "rootful"
+    } else {
+        "rootless"
+    };
+    let mode = sv
+        .block
+        .as_ref()
+        .map_or("Filesystem", |b| b.fs_type.as_str());
+    format!("{layout},{mode},{size},{}", class.unwrap_or("default"))
+}
+
+fn state_claim_spec(cfg: &Config) -> PersistentVolumeClaimSpec {
+    let sv = &cfg.build.state_volume;
+    let (size, class) = sv.claim().unwrap_or_default();
+    PersistentVolumeClaimSpec {
+        access_modes: Some(vec!["ReadWriteOnce".into()]),
+        volume_mode: Some(
+            if sv.block.is_some() {
+                "Block"
+            } else {
+                "Filesystem"
+            }
+            .into(),
+        ),
+        storage_class_name: class.map(str::to_string),
+        resources: Some(VolumeResourceRequirements {
+            requests: Some(BTreeMap::from([(
+                "storage".to_string(),
+                Quantity(size.to_string()),
+            )])),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
+/// The GitImage's persistent BuildKit state PVC, if `build.stateVolume.persistent` is set.
+/// Owned by the GitImage, so it goes away with it.
+pub fn state_claim(gi: &GitImage, cfg: &Config) -> Option<PersistentVolumeClaim> {
+    cfg.build.state_volume.persistent.as_ref()?;
+    let name = gi.metadata.name.clone().unwrap_or_default();
+    Some(PersistentVolumeClaim {
+        metadata: ObjectMeta {
+            name: Some(state_claim_name(&name)),
+            namespace: gi.metadata.namespace.clone(),
+            labels: Some(BTreeMap::from([
+                (keys::NAME_LABEL.to_string(), name),
+                ("app.kubernetes.io/managed-by".into(), "gitimage".into()),
+            ])),
+            annotations: Some(BTreeMap::from([(
+                STATE_KEY_ANNOTATION.to_string(),
+                state_claim_key(cfg),
+            )])),
+            owner_references: Some(vec![owner_ref(gi)]),
+            ..Default::default()
+        },
+        spec: Some(state_claim_spec(cfg)),
+        ..Default::default()
+    })
+}
+
+/// `buildkitd.toml` garbage collection for a persistent state volume: keep at most 80% of it,
+/// so the volume never fills up, and never prune below 10%. Unlike BuildKit's default rules,
+/// cache mounts are not capped at 512MB: keeping them is the point of a persistent volume.
+fn gc_policy(cfg: &Config) -> Option<String> {
+    let bytes = cfg
+        .build
+        .state_volume
+        .persistent
+        .as_ref()
+        .and_then(|p| gitimage_api::config::quantity_bytes(&p.size))?;
+    let (reserved, max) = (bytes / 10, bytes / 10 * 8);
+    Some(format!(
+        r#"
+# build.stateVolume.persistent
+[[worker.oci.gcpolicy]]
+  filters = ["type==source.local", "type==source.git.checkout"]
+  keepDuration = "48h"
+  maxUsedSpace = "512MB"
+[[worker.oci.gcpolicy]]
+  keepDuration = "1440h"
+  reservedSpace = "{reserved}"
+  maxUsedSpace = "{max}"
+[[worker.oci.gcpolicy]]
+  all = true
+  reservedSpace = "{reserved}"
+  maxUsedSpace = "{max}"
+"#
+    ))
+}
+
+/// Formats the state device unless it already holds a filesystem that `e2fsck` can repair (a
+/// build killed mid-write leaves an unclean journal).
+fn format_once_script(fs_type: &str) -> String {
+    format!(
+        "if dumpe2fs -h {STATE_DEVICE} >/dev/null 2>&1; then \
+         e2fsck -p {STATE_DEVICE}; rc=$?; [ $rc -lt 4 ] && exit 0; \
+         echo \"e2fsck exited $rc: reformatting the BuildKit state volume\" >&2; fi; \
+         exec mkfs.{fs_type} -q -F -E nodiscard {STATE_DEVICE}"
+    )
+}
 
 /// BuildKit's state volume (`build.stateVolume`), added to `pod` and mounted into `buildkit`
-/// (whose command must already be set). emptyDir (node disk, or tmpfs with `medium: Memory`)
-/// or a raw block ephemeral PVC: an init container formats it, then BuildKit's command is
-/// wrapped to mount it at the state dir before exec'ing the original command.
-pub fn attach_state_volume(cfg: &Config, pod: &mut PodSpec, buildkit: &mut Container) {
+/// (whose command must already be set). With `claim`, the GitImage's persistent PVC of that
+/// name (only if `persistent` is set); otherwise an emptyDir (node disk, or tmpfs with
+/// `medium: Memory`) or a raw block ephemeral PVC. A block volume is formatted by an init
+/// container (a persistent one only once), then BuildKit's command is wrapped to mount it at
+/// the state dir before exec'ing the original command.
+pub fn attach_state_volume(
+    cfg: &Config,
+    pod: &mut PodSpec,
+    buildkit: &mut Container,
+    claim: Option<&str>,
+) {
     let sv = &cfg.build.state_volume;
+    let claim = claim.filter(|_| sv.persistent.is_some());
     let state_dir = BuildkitLayout::for_config(cfg).state_dir;
     let volumes = pod.volumes.get_or_insert_with(Vec::new);
-    let Some(b) = &sv.block else {
-        volumes.push(Volume {
-            name: STATE_VOLUME.into(),
-            empty_dir: Some(EmptyDirVolumeSource {
+    let mut volume = Volume {
+        name: STATE_VOLUME.into(),
+        ..Default::default()
+    };
+    match (claim, &sv.block) {
+        (Some(name), _) => {
+            volume.persistent_volume_claim = Some(PersistentVolumeClaimVolumeSource {
+                claim_name: name.into(),
+                read_only: None,
+            });
+            // Kubelet otherwise re-chowns every file of the cache on each mount.
+            pod.security_context
+                .get_or_insert_with(Default::default)
+                .fs_group_change_policy = Some("OnRootMismatch".into());
+        }
+        (None, Some(_)) => {
+            volume.ephemeral = Some(EphemeralVolumeSource {
+                volume_claim_template: Some(PersistentVolumeClaimTemplate {
+                    metadata: Some(ObjectMeta {
+                        labels: Some(BTreeMap::from([(
+                            "app.kubernetes.io/managed-by".to_string(),
+                            "gitimage".to_string(),
+                        )])),
+                        ..Default::default()
+                    }),
+                    spec: state_claim_spec(cfg),
+                }),
+            });
+        }
+        (None, None) => {
+            volume.empty_dir = Some(EmptyDirVolumeSource {
                 medium: (!sv.medium.is_empty()).then(|| sv.medium.clone()),
                 size_limit: sv.size_limit.clone().map(Quantity),
-            }),
-            ..Default::default()
-        });
+            });
+        }
+    }
+    volumes.push(volume);
+    let Some(b) = &sv.block else {
         buildkit
             .volume_mounts
             .get_or_insert_with(Vec::new)
             .push(mount(STATE_VOLUME, state_dir, false));
         return;
     };
-    volumes.push(Volume {
-        name: STATE_VOLUME.into(),
-        ephemeral: Some(EphemeralVolumeSource {
-            volume_claim_template: Some(PersistentVolumeClaimTemplate {
-                metadata: Some(ObjectMeta {
-                    labels: Some(BTreeMap::from([(
-                        "app.kubernetes.io/managed-by".to_string(),
-                        "gitimage".to_string(),
-                    )])),
-                    ..Default::default()
-                }),
-                spec: PersistentVolumeClaimSpec {
-                    access_modes: Some(vec!["ReadWriteOnce".into()]),
-                    volume_mode: Some("Block".into()),
-                    storage_class_name: b.storage_class_name.clone(),
-                    resources: Some(VolumeResourceRequirements {
-                        requests: Some(BTreeMap::from([(
-                            "storage".to_string(),
-                            Quantity(b.size.clone()),
-                        )])),
-                        ..Default::default()
-                    }),
-                    ..Default::default()
-                },
-            }),
-        }),
-        ..Default::default()
-    });
     let device = || {
         Some(vec![VolumeDevice {
             name: STATE_VOLUME.into(),
             device_path: STATE_DEVICE.into(),
         }])
     };
-    // Fresh volume per build pod; nodiscard skips a slow full-device TRIM on network storage.
+    // nodiscard skips a slow full-device TRIM on network storage.
+    let format = if claim.is_some() {
+        vec!["sh".into(), "-c".into(), format_once_script(&b.fs_type)]
+    } else {
+        vec![
+            format!("mkfs.{}", b.fs_type),
+            "-q".into(),
+            "-F".into(),
+            "-E".into(),
+            "nodiscard".into(),
+            STATE_DEVICE.into(),
+        ]
+    };
     pod.init_containers
         .get_or_insert_with(Vec::new)
         .push(Container {
             name: "format-state".into(),
             image: Some(b.format_image.clone()),
-            command: Some(vec![
-                format!("mkfs.{}", b.fs_type),
-                "-q".into(),
-                "-F".into(),
-                "-E".into(),
-                "nodiscard".into(),
-                STATE_DEVICE.into(),
-            ]),
+            command: Some(format),
             volume_devices: device(),
             security_context: Some(SecurityContext {
                 privileged: Some(true),
@@ -637,7 +767,7 @@ pub fn build_job(gi: &GitImage, cfg: &Config, p: &BuildParams) -> Job {
         ..Default::default()
     };
     pod_overlay(cfg, &mut pod, &mut buildkit);
-    attach_state_volume(cfg, &mut pod, &mut buildkit);
+    attach_state_volume(cfg, &mut pod, &mut buildkit, Some(&state_claim_name(&name)));
     pod.containers = vec![buildkit];
 
     let mut annotations = BTreeMap::new();
@@ -706,6 +836,9 @@ pub fn build_configmap(ns: &str, cfg: &Config, ca_pem: &str) -> ConfigMap {
         "[registry.\"{}\"]\n  ca = [\"/etc/gitimage/ca.crt\"]\n",
         cfg.push_endpoint.authority()
     );
+    if let Some(gc) = gc_policy(cfg) {
+        toml.push_str(&gc);
+    }
     if !cfg.build.buildkitd_config.trim().is_empty() {
         toml.push_str("\n# build.buildkitdConfig\n");
         toml.push_str(cfg.build.buildkitd_config.trim_end());
@@ -1144,6 +1277,146 @@ build:
             crate::isolation::check_key(&cfg),
             crate::isolation::check_key(&config())
         );
+    }
+
+    fn persistent(cfg: &mut Config, block: bool) {
+        cfg.build.state_volume.persistent = Some(gitimage_api::config::PersistentStateVolume {
+            size: "20Gi".into(),
+            storage_class_name: Some("local-path".into()),
+        });
+        if block {
+            cfg.build_policy.isolation.mode = IsolationMode::Privileged;
+            cfg.build.state_volume.block = Some(gitimage_api::config::BlockStateVolume {
+                storage_class_name: None,
+                size: String::new(),
+                fs_type: "ext4".into(),
+                format_image: "debian:bookworm-slim".into(),
+            });
+        }
+    }
+
+    fn state_volume(pod: &PodSpec) -> &Volume {
+        pod.volumes
+            .as_ref()
+            .unwrap()
+            .iter()
+            .find(|v| v.name == "buildkit-state")
+            .unwrap()
+    }
+
+    #[test]
+    fn persistent_state_volume_is_the_gitimages_pvc() {
+        let mut cfg = config();
+        persistent(&mut cfg, false);
+        let job = build_job(&gitimage(), &cfg, &params());
+        // 20Gi: keep 10% at least, 80% at most.
+        let toml = build_configmap("team", &cfg, "PEM").data.unwrap()["buildkitd.toml"].clone();
+        assert!(toml.contains("reservedSpace = \"2147483648\""), "{toml}");
+        assert!(toml.contains("maxUsedSpace = \"17179869184\""), "{toml}");
+        assert!(!toml.contains("exec.cachemount"), "{toml}");
+        let plain =
+            build_configmap("team", &config(), "PEM").data.unwrap()["buildkitd.toml"].clone();
+        assert!(!plain.contains("gcpolicy"), "{plain}");
+        let pod = job.spec.unwrap().template.spec.unwrap();
+        let claim = state_volume(&pod).persistent_volume_claim.clone().unwrap();
+        assert_eq!(claim.claim_name, "myapp-buildkit");
+        assert_eq!(
+            pod.security_context
+                .unwrap()
+                .fs_group_change_policy
+                .as_deref(),
+            Some("OnRootMismatch")
+        );
+        assert!(
+            pod.containers[0]
+                .volume_mounts
+                .as_ref()
+                .unwrap()
+                .iter()
+                .any(|m| m.name == "buildkit-state"
+                    && m.mount_path == "/home/user/.local/share/buildkit")
+        );
+
+        let pvc = state_claim(&gitimage(), &cfg).unwrap();
+        assert_eq!(pvc.metadata.name.as_deref(), Some("myapp-buildkit"));
+        assert_eq!(pvc.metadata.owner_references.unwrap()[0].kind, "GitImage");
+        assert_eq!(
+            pvc.metadata.annotations.unwrap()[STATE_KEY_ANNOTATION],
+            "rootless,Filesystem,20Gi,local-path"
+        );
+        let spec = pvc.spec.unwrap();
+        assert_eq!(spec.volume_mode.as_deref(), Some("Filesystem"));
+        assert_eq!(spec.storage_class_name.as_deref(), Some("local-path"));
+        assert!(state_claim(&gitimage(), &config()).is_none());
+
+        // The isolation check has no GitImage: it gets a throwaway emptyDir.
+        let check = crate::isolation::check_job(&cfg, "gitimage-system")
+            .spec
+            .unwrap()
+            .template
+            .spec
+            .unwrap();
+        assert!(state_volume(&check).empty_dir.is_some());
+    }
+
+    #[test]
+    fn persistent_block_state_volume_is_formatted_once() {
+        let mut cfg = config();
+        persistent(&mut cfg, true);
+        let job = build_job(&gitimage(), &cfg, &params());
+        let pod = job.spec.unwrap().template.spec.unwrap();
+        assert_eq!(
+            state_volume(&pod)
+                .persistent_volume_claim
+                .as_ref()
+                .unwrap()
+                .claim_name,
+            "myapp-buildkit"
+        );
+        let fmt = pod.init_containers.as_ref().unwrap().last().unwrap();
+        let script = &fmt.command.as_ref().unwrap()[2];
+        assert!(
+            script.starts_with("if dumpe2fs -h /dev/buildkit-state"),
+            "{script}"
+        );
+        assert!(script.contains("e2fsck -p /dev/buildkit-state"), "{script}");
+        assert!(
+            script.ends_with("exec mkfs.ext4 -q -F -E nodiscard /dev/buildkit-state"),
+            "{script}"
+        );
+        assert!(
+            pod.containers[0].command.as_ref().unwrap()[2]
+                .contains("mount -t ext4 -o noatime /dev/buildkit-state /var/lib/buildkit")
+        );
+
+        let pvc = state_claim(&gitimage(), &cfg).unwrap();
+        assert_eq!(pvc.spec.unwrap().volume_mode.as_deref(), Some("Block"));
+        assert_eq!(state_claim_key(&cfg), "rootful,ext4,20Gi,local-path");
+
+        // The isolation check formats a fresh ephemeral volume of the same size.
+        let check = crate::isolation::check_job(&cfg, "gitimage-system")
+            .spec
+            .unwrap()
+            .template
+            .spec
+            .unwrap();
+        let eph = state_volume(&check).ephemeral.clone().unwrap();
+        let spec = eph.volume_claim_template.unwrap().spec;
+        assert_eq!(
+            spec.resources.unwrap().requests.unwrap()["storage"],
+            Quantity("20Gi".into())
+        );
+        let fmt = check.init_containers.unwrap();
+        assert_eq!(
+            fmt.last().unwrap().command.as_ref().unwrap()[0],
+            "mkfs.ext4"
+        );
+    }
+
+    #[test]
+    fn state_claim_names_stay_valid() {
+        assert_eq!(state_claim_name("myapp"), "myapp-buildkit");
+        assert_eq!(state_claim_name(&"a".repeat(253)).len(), 253);
     }
 
     #[test]

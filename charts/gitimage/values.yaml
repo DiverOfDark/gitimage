@@ -69,6 +69,10 @@ build:
   # use `block` there: a raw block (volumeMode: Block) ephemeral PVC per build, formatted by an
   # init container and mounted by BuildKit (needs privileged or privilegedInSandbox).
   # medium: Memory (tmpfs) also works but counts against the build pod's memory.
+  # persistent: one PVC per GitImage (<name>-buildkit), kept between its builds, so BuildKit's
+  # local cache and RUN --mount=type=cache survive; BuildKit keeps it within 80% of `size`. With
+  # `block` too, the PVC is volumeMode: Block, sized here, and formatted only once; give block
+  # just fsType/formatImage then. Excludes medium and sizeLimit.
   stateVolume:
     medium: ""
     sizeLimit: ""
@@ -78,6 +82,10 @@ build:
     #   size: 20Gi
     #   fsType: ext4                         # or ext3
     #   formatImage: debian:bookworm-slim    # provides mkfs.<fsType>
+    persistent: {}
+    # persistent:
+    #   size: 20Gi
+    #   storageClassName: local-path         # default class if unset
   # Appended to the build pods' buildkitd.toml: registry mirrors, private/plain-HTTP registries.
   buildkitdConfig: ""
     # [registry."docker.io"]

@@ -10,7 +10,7 @@ use gitimage_api::{BuildOutcome, BuildRecord, GitImage, GitImageStatus, OnNewCom
 use gitimage_git::{Credentials, GitClient, Resolved};
 use gitimage_oci::{Reference, Repo};
 use k8s_openapi::api::batch::v1::Job;
-use k8s_openapi::api::core::v1::{Pod, Secret};
+use k8s_openapi::api::core::v1::{PersistentVolumeClaim, Pod, Secret};
 use kube::api::{
     Api, DeleteParams, ListParams, LogParams, Patch, PatchParams, PostParams, PropagationPolicy,
 };
@@ -392,19 +392,123 @@ async fn publish(ctx: &Ctx, gi: &GitImage, type_: EventType, reason: &str, note:
 }
 
 /// Creates the build Job and its push-auth Secret.
+/// What [`start_build`] did.
+enum Started {
+    Job(Box<Job>),
+    /// A build secret is missing or has no such key.
+    SecretMissing(String),
+    /// The persistent state volume is being replaced; try again shortly.
+    WaitingForStateVolume,
+}
+
+/// Updates `status` for a [`start_build`] result; whether a build is (about to be) running.
+fn on_start(
+    ctx: &Ctx,
+    status: &mut GitImageStatus,
+    started: Started,
+    generation: Option<i64>,
+    sha: &str,
+) -> bool {
+    match started {
+        Started::Job(job) => {
+            set_building(ctx, status, &job, generation, sha);
+            true
+        }
+        Started::SecretMissing(msg) => {
+            set_condition(
+                &mut status.conditions,
+                cond::FAILED,
+                true,
+                fail::SECRET_MISSING,
+                &msg,
+                generation,
+            );
+            false
+        }
+        Started::WaitingForStateVolume => {
+            set_condition(
+                &mut status.conditions,
+                cond::BUILDING,
+                true,
+                "Waiting",
+                &format!("{}: waiting for the BuildKit state volume", short(sha)),
+                generation,
+            );
+            true
+        }
+    }
+}
+
+/// Creates the GitImage's persistent BuildKit state PVC (`build.stateVolume.persistent`).
+/// `false` while one made for other settings, or deleted by the user to reset the cache, is
+/// going away: the build waits for it rather than reuse it.
+async fn ensure_state_claim(ctx: &Ctx, gi: &GitImage) -> Result<bool, Error> {
+    let Some(want) = job::state_claim(gi, &ctx.config) else {
+        return Ok(true);
+    };
+    let ns = gi.namespace().unwrap_or_default();
+    let name = want.name_any();
+    let api: Api<PersistentVolumeClaim> = Api::namespaced(ctx.client.clone(), &ns);
+    let Some(have) = api.get_opt(&name).await? else {
+        return match api.create(&PostParams::default(), &want).await {
+            Ok(_) => Ok(true),
+            Err(kube::Error::Api(e)) if e.code == 409 => Ok(false),
+            Err(e) => Err(e.into()),
+        };
+    };
+    if have.metadata.deletion_timestamp.is_some() {
+        return Ok(false);
+    }
+    let ours = have
+        .owner_references()
+        .iter()
+        .any(|o| Some(&o.uid) == gi.meta().uid.as_ref());
+    if !ours {
+        return Err(Error::Other(format!(
+            "PersistentVolumeClaim {name} exists and does not belong to this GitImage; \
+             delete or rename it to use build.stateVolume.persistent"
+        )));
+    }
+    let key = |p: &PersistentVolumeClaim| p.annotations().get(job::STATE_KEY_ANNOTATION).cloned();
+    if key(&have) == key(&want) {
+        return Ok(true);
+    }
+    tracing::info!(namespace = %ns, pvc = %name, from = ?key(&have), to = ?key(&want), "recreating BuildKit state volume");
+    publish(
+        ctx,
+        gi,
+        EventType::Normal,
+        "StateVolumeRecreated",
+        format!(
+            "Recreating {name}: made for {}, now {}",
+            key(&have).unwrap_or_default(),
+            key(&want).unwrap_or_default()
+        ),
+    )
+    .await;
+    match api.delete(&name, &DeleteParams::default()).await {
+        Ok(_) => Ok(false),
+        Err(kube::Error::Api(e)) if e.code == 404 => Ok(false),
+        Err(e) => Err(e.into()),
+    }
+}
+
 async fn start_build(
     ctx: &Arc<Ctx>,
     gi: &GitImage,
     sha: &str,
     attempt: u32,
     skip_if_tree: Option<String>,
-) -> Result<Result<Job, String>, Error> {
+) -> Result<Started, Error> {
     let ns = gi.namespace().unwrap_or_default();
     let mut gi_resolved = gi.clone();
     let secrets = match resolve_secret_keys(ctx, &mut gi_resolved).await {
         Ok(s) => s,
-        Err(msg) => return Ok(Err(msg)),
+        Err(msg) => return Ok(Started::SecretMissing(msg)),
     };
+    if !ensure_state_claim(ctx, gi).await? {
+        return Ok(Started::WaitingForStateVolume);
+    }
     let name = job::job_name(&gi.name_any(), sha, attempt);
     let params = BuildParams {
         sha: sha.into(),
@@ -463,7 +567,7 @@ async fn start_build(
         format!("Building {} (job {name})", &sha[..sha.len().min(12)]),
     )
     .await;
-    Ok(Ok(created))
+    Ok(Started::Job(Box::new(created)))
 }
 
 /// Outcome of looking at a finished Job.
@@ -749,27 +853,48 @@ async fn reconcile_inner(gi: Arc<GitImage>, ctx: Arc<Ctx>) -> Result<Action, Err
         }
         match gi.spec.build.on_new_commit {
             OnNewCommit::Cancel => {
-                let dp = DeleteParams {
-                    propagation_policy: Some(PropagationPolicy::Foreground),
-                    ..Default::default()
-                };
-                let _ = jobs_api.delete(&j.name_any(), &dp).await;
-                if status.record(&rev).is_none() {
-                    push_record(&mut status, record(&rev, BuildOutcome::Superseded));
-                    ctx.metrics.build("Superseded");
+                if j.metadata.deletion_timestamp.is_none() {
+                    let dp = DeleteParams {
+                        propagation_policy: Some(PropagationPolicy::Foreground),
+                        ..Default::default()
+                    };
+                    let _ = jobs_api.delete(&j.name_any(), &dp).await;
+                    if status.record(&rev).is_none() {
+                        push_record(&mut status, record(&rev, BuildOutcome::Superseded));
+                        ctx.metrics.build("Superseded");
+                    }
+                    publish(
+                        &ctx,
+                        &gi,
+                        EventType::Normal,
+                        "BuildSuperseded",
+                        format!(
+                            "Cancelled build of {} for newer commit {}",
+                            short(&rev),
+                            short(&sha)
+                        ),
+                    )
+                    .await;
                 }
-                publish(
-                    &ctx,
-                    &gi,
-                    EventType::Normal,
-                    "BuildSuperseded",
-                    format!(
-                        "Cancelled build of {} for newer commit {}",
-                        short(&rev),
-                        short(&sha)
-                    ),
-                )
-                .await;
+                // Until its pod is gone it holds the persistent state volume, and with it
+                // buildkitd's lock: a second buildkitd on the same node would fail to start.
+                // Foreground deletion keeps the Job until then.
+                if ctx.config.build.state_volume.persistent.is_some() {
+                    waiting_on_other = true;
+                    building = true;
+                    set_condition(
+                        &mut status.conditions,
+                        cond::BUILDING,
+                        true,
+                        "Waiting",
+                        &format!(
+                            "{}: waiting for the cancelled build of {} to stop",
+                            short(&sha),
+                            short(&rev)
+                        ),
+                        generation,
+                    );
+                }
             }
             OnNewCommit::Wait => {
                 follow_job(&ctx, &gi, j);
@@ -835,20 +960,8 @@ async fn reconcile_inner(gi: Arc<GitImage>, ctx: Arc<Ctx>) -> Result<Action, Err
                     && j.status.as_ref().and_then(|s| s.failed).unwrap_or(0) > 0 =>
             {
                 let skip = j.annotations().get("gitimage.dev/skip-if-tree").cloned();
-                match start_build(&ctx, &gi, &sha, job_attempt(j) + 1, skip).await? {
-                    Ok(job) => {
-                        building = true;
-                        set_building(&ctx, &mut status, &job, generation, &sha)
-                    }
-                    Err(msg) => set_condition(
-                        &mut status.conditions,
-                        cond::FAILED,
-                        true,
-                        fail::SECRET_MISSING,
-                        &msg,
-                        generation,
-                    ),
-                }
+                let started = start_build(&ctx, &gi, &sha, job_attempt(j) + 1, skip).await?;
+                building |= on_start(&ctx, &mut status, started, generation, &sha);
             }
             Some(j) => match inspect_finished(&ctx, &gi, &status, j, &sha).await {
                 Finished::Record(mut rec) => {
@@ -917,20 +1030,8 @@ async fn reconcile_inner(gi: Arc<GitImage>, ctx: Arc<Ctx>) -> Result<Action, Err
                 {
                     let attempt = job_attempt(j) + 1;
                     let skip = j.annotations().get("gitimage.dev/skip-if-tree").cloned();
-                    match start_build(&ctx, &gi, &sha, attempt, skip).await? {
-                        Ok(job) => {
-                            building = true;
-                            set_building(&ctx, &mut status, &job, generation, &sha)
-                        }
-                        Err(msg) => set_condition(
-                            &mut status.conditions,
-                            cond::FAILED,
-                            true,
-                            fail::SECRET_MISSING,
-                            &msg,
-                            generation,
-                        ),
-                    }
+                    let started = start_build(&ctx, &gi, &sha, attempt, skip).await?;
+                    building |= on_start(&ctx, &mut status, started, generation, &sha);
                 }
                 Finished::Retry => {
                     return finish(
@@ -978,22 +1079,8 @@ async fn reconcile_inner(gi: Arc<GitImage>, ctx: Arc<Ctx>) -> Result<Action, Err
                     .await;
                     push_record(&mut status, rec);
                 } else {
-                    match start_build(&ctx, &gi, &sha, 0, last_tree).await? {
-                        Ok(job) => {
-                            building = true;
-                            set_building(&ctx, &mut status, &job, generation, &sha)
-                        }
-                        Err(msg) => {
-                            set_condition(
-                                &mut status.conditions,
-                                cond::FAILED,
-                                true,
-                                fail::SECRET_MISSING,
-                                &msg,
-                                generation,
-                            );
-                        }
-                    }
+                    let started = start_build(&ctx, &gi, &sha, 0, last_tree).await?;
+                    building |= on_start(&ctx, &mut status, started, generation, &sha);
                 }
             }
         }
