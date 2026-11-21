@@ -86,6 +86,12 @@ build:
     # persistent:
     #   size: 20Gi
     #   storageClassName: local-path         # default class if unset
+    # Extra labels/annotations on the state PVCs (block or persistent): they hold only a
+    # rebuildable cache, so keep them out of backups.
+    labels: {}
+    #   velero.io/exclude-from-backup: "true"
+    annotations: {}
+    #   k8up.io/backup: "false"
   # Appended to the build pods' buildkitd.toml: registry mirrors, private/plain-HTTP registries.
   buildkitdConfig: ""
     # [registry."docker.io"]

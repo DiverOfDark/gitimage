@@ -163,6 +163,12 @@ impl Config {
                 "build.stateVolume.medium must be \"\" or \"Memory\"".into(),
             ));
         }
+        if (!sv.labels.is_empty() || !sv.annotations.is_empty()) && sv.claim().is_none() {
+            return Err(ConfigError::Invalid(
+                "build.stateVolume.labels and annotations apply to PVCs: set block or persistent"
+                    .into(),
+            ));
+        }
         if let Some(p) = &sv.persistent {
             if !sv.medium.is_empty() || sv.size_limit.is_some() {
                 return Err(ConfigError::Invalid(
@@ -478,6 +484,13 @@ pub struct StateVolume {
     /// and formatted only when it holds no filesystem yet.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub persistent: Option<PersistentStateVolume>,
+    /// Extra labels on the state PVCs (`block` or `persistent`), e.g.
+    /// `velero.io/exclude-from-backup: "true"`: they hold only a rebuildable cache.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub labels: BTreeMap<String, String>,
+    /// Extra annotations on the state PVCs, e.g. `k8up.io/backup: "false"`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub annotations: BTreeMap<String, String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -820,6 +833,19 @@ network: { clusterCIDRs: [10.244.0.0/16, 10.96.0.0/12] }
         let sized_twice = block.replace("fsType: ext4", "size: 10Gi");
         let err = Config::from_yaml(&sized_twice).unwrap_err().to_string();
         assert!(err.contains("not in block"), "{err}");
+    }
+
+    #[test]
+    fn state_volume_labels_need_a_pvc() {
+        let labels = "labels: { velero.io/exclude-from-backup: \"true\" }";
+        let ok = format!(
+            "{HOMELAB}build: {{ stateVolume: {{ persistent: {{ size: 20Gi }}, {labels} }} }}\n"
+        );
+        let sv = Config::from_yaml(&ok).unwrap().build.state_volume;
+        assert_eq!(sv.labels["velero.io/exclude-from-backup"], "true");
+        let empty_dir = format!("{HOMELAB}build: {{ stateVolume: {{ {labels} }} }}\n");
+        let err = Config::from_yaml(&empty_dir).unwrap_err().to_string();
+        assert!(err.contains("apply to PVCs"), "{err}");
     }
 
     #[test]

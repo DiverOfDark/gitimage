@@ -39,7 +39,8 @@ case "$STORAGE" in
              --set storage.s3.secret=s3-creds --set storage.s3.pathStyle=true) ;;
 esac
 # E2E_PERSISTENT=1: one BuildKit state PVC per GitImage (kind's local-path class).
-[ -n "${E2E_PERSISTENT:-}" ] && args+=(--set build.stateVolume.persistent.size=5Gi)
+[ -n "${E2E_PERSISTENT:-}" ] && args+=(--set build.stateVolume.persistent.size=5Gi
+  --set-string 'build.stateVolume.labels.velero\.io/exclude-from-backup=true')
 bkcfg=$(mktemp); trap 'rm -f "$bkcfg"' EXIT
 if [ -n "${E2E_DOCKERHUB_PREFIX:-}" ]; then
   printf '[registry."docker.io"]\n  mirrors = ["%s"]\n' "${E2E_DOCKERHUB_PREFIX%/}" > "$bkcfg"

@@ -325,6 +325,26 @@ fn state_claim_spec(cfg: &Config) -> PersistentVolumeClaimSpec {
     }
 }
 
+/// `build.stateVolume.labels` plus `ours`, which win.
+fn state_claim_labels<const N: usize>(
+    cfg: &Config,
+    ours: [(String, String); N],
+) -> BTreeMap<String, String> {
+    let mut labels = cfg.build.state_volume.labels.clone();
+    labels.extend(ours);
+    labels
+}
+
+/// `build.stateVolume.annotations` plus `ours`, which win.
+fn state_claim_annotations<const N: usize>(
+    cfg: &Config,
+    ours: [(String, String); N],
+) -> BTreeMap<String, String> {
+    let mut annotations = cfg.build.state_volume.annotations.clone();
+    annotations.extend(ours);
+    annotations
+}
+
 /// The GitImage's persistent BuildKit state PVC, if `build.stateVolume.persistent` is set.
 /// Owned by the GitImage, so it goes away with it.
 pub fn state_claim(gi: &GitImage, cfg: &Config) -> Option<PersistentVolumeClaim> {
@@ -334,14 +354,17 @@ pub fn state_claim(gi: &GitImage, cfg: &Config) -> Option<PersistentVolumeClaim>
         metadata: ObjectMeta {
             name: Some(state_claim_name(&name)),
             namespace: gi.metadata.namespace.clone(),
-            labels: Some(BTreeMap::from([
-                (keys::NAME_LABEL.to_string(), name),
-                ("app.kubernetes.io/managed-by".into(), "gitimage".into()),
-            ])),
-            annotations: Some(BTreeMap::from([(
-                STATE_KEY_ANNOTATION.to_string(),
-                state_claim_key(cfg),
-            )])),
+            labels: Some(state_claim_labels(
+                cfg,
+                [
+                    (keys::NAME_LABEL.to_string(), name),
+                    ("app.kubernetes.io/managed-by".into(), "gitimage".into()),
+                ],
+            )),
+            annotations: Some(state_claim_annotations(
+                cfg,
+                [(STATE_KEY_ANNOTATION.to_string(), state_claim_key(cfg))],
+            )),
             owner_references: Some(vec![owner_ref(gi)]),
             ..Default::default()
         },
@@ -426,10 +449,11 @@ pub fn attach_state_volume(
             volume.ephemeral = Some(EphemeralVolumeSource {
                 volume_claim_template: Some(PersistentVolumeClaimTemplate {
                     metadata: Some(ObjectMeta {
-                        labels: Some(BTreeMap::from([(
-                            "app.kubernetes.io/managed-by".to_string(),
-                            "gitimage".to_string(),
-                        )])),
+                        labels: Some(state_claim_labels(
+                            cfg,
+                            [("app.kubernetes.io/managed-by".into(), "gitimage".into())],
+                        )),
+                        annotations: (!sv.annotations.is_empty()).then(|| sv.annotations.clone()),
                         ..Default::default()
                     }),
                     spec: state_claim_spec(cfg),
@@ -1411,6 +1435,47 @@ build:
             fmt.last().unwrap().command.as_ref().unwrap()[0],
             "mkfs.ext4"
         );
+    }
+
+    #[test]
+    fn state_pvcs_carry_configured_labels_and_annotations() {
+        let mut cfg = config();
+        persistent(&mut cfg, true);
+        let sv = &mut cfg.build.state_volume;
+        sv.labels = BTreeMap::from([
+            ("velero.io/exclude-from-backup".into(), "true".into()),
+            // Cannot take over a label the controller relies on.
+            ("app.kubernetes.io/managed-by".into(), "someone-else".into()),
+        ]);
+        sv.annotations = BTreeMap::from([("k8up.io/backup".into(), "false".into())]);
+        let meta = state_claim(&gitimage(), &cfg).unwrap().metadata;
+        let labels = meta.labels.unwrap();
+        assert_eq!(labels["velero.io/exclude-from-backup"], "true");
+        assert_eq!(labels["app.kubernetes.io/managed-by"], "gitimage");
+        let annotations = meta.annotations.unwrap();
+        assert_eq!(annotations["k8up.io/backup"], "false");
+        assert!(annotations.contains_key(STATE_KEY_ANNOTATION));
+
+        // The isolation check's ephemeral block PVC gets them too.
+        let check = crate::isolation::check_job(&cfg, "gitimage-system")
+            .spec
+            .unwrap()
+            .template
+            .spec
+            .unwrap();
+        let tmpl = state_volume(&check)
+            .ephemeral
+            .clone()
+            .unwrap()
+            .volume_claim_template
+            .unwrap()
+            .metadata
+            .unwrap();
+        assert_eq!(
+            tmpl.labels.unwrap()["velero.io/exclude-from-backup"],
+            "true"
+        );
+        assert_eq!(tmpl.annotations.unwrap()["k8up.io/backup"], "false");
     }
 
     #[test]
