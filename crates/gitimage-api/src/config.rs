@@ -110,6 +110,10 @@ pub struct ControllerSettings {
     /// Image of `gitimage` itself, used for the `clone` init container. Set by the chart.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
+    /// The roller also writes the built image into the pod template, not only the revision
+    /// annotation, so tools that read templates (Trivy Operator) see the real image.
+    #[serde(default)]
+    pub pin_template_image: bool,
 }
 
 impl Config {

@@ -30,3 +30,21 @@ A pod admitted before its image exists stays `SchedulingGated` (not `Pending` on
 exist yet.
 
 A pod may only reference GitImage images of its own namespace; the webhook denies anything else.
+
+## Image scanners
+
+The template keeps `placeholder`; only pods get the built image. Scanners that read templates
+instead of pods, such as Trivy Operator for Deployments, StatefulSets and DaemonSets, scan the
+placeholder. Two chart values fix that:
+
+- `controller.pinTemplateImage: true`: the roller writes the built image into each bound
+  container of the template, together with the revision annotation. It checks on every
+  reconcile, so workloads created after a build and templates reset by an apply are pinned
+  again. Turning it on rolls each workload once.
+- `webhook.crossTenantNamespaces: [trivy-system]`: Trivy Operator in filesystem mode runs the
+  scanned image in its own namespace, which the cross-tenant guard otherwise denies.
+
+With ArgoCD, the `managedFieldsManagers` ignore rule and `RespectIgnoreDifferences` from
+[GitOps with ArgoCD](argocd.md) keep the pinned image on sync. Helm and `kubectl apply` reset it
+to the placeholder, which rolls the workload, and the roller then pins it again, which rolls it
+once more.

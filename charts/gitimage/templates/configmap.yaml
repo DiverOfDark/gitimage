@@ -83,6 +83,7 @@ data:
     {{- end }}
     controller:
       image: {{ include "gitimage.image" . | quote }}
+      pinTemplateImage: {{ .Values.controller.pinTemplateImage }}
     {{- if .Values.ui.enabled }}
     ui:
       enabled: true

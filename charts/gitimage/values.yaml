@@ -92,6 +92,11 @@ network:
 
 controller:
   replicas: 2
+  # Also write the built image into workload pod templates, not only the revision annotation,
+  # for tools that read templates instead of pods (Trivy Operator). Helm and `kubectl apply`
+  # reset it to the placeholder, which rolls the workload twice; ArgoCD with
+  # RespectIgnoreDifferences keeps it. See docs/src/guide/workloads.md.
+  pinTemplateImage: false
   extraEnv: []
   resources:
     requests: { cpu: 50m, memory: 128Mi }
@@ -103,6 +108,10 @@ controller:
 webhook:
   replicas: 2
   timeoutSeconds: 5
+  # Namespaces whose pods may use any namespace's GitImage images, such as an image scanner's
+  # (Trivy Operator in filesystem mode runs the scanned image in its own namespace). Pods
+  # there can read every tenant's images; list only namespaces you trust like the cluster.
+  crossTenantNamespaces: []
   resources:
     requests: { cpu: 20m, memory: 64Mi }
     limits: { memory: 256Mi }
