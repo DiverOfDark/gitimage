@@ -27,7 +27,8 @@ case "$ISOLATION" in
                  --set buildPolicy.isolation.rootfulInSandbox=true) ;;
   kata*) args+=(--set buildPolicy.isolation.mode=runtimeClass --set buildPolicy.isolation.runtimeClassName="$ISOLATION"
                 --set buildPolicy.isolation.privilegedInSandbox=true) ;;
-  gvisor) args+=(--set buildPolicy.isolation.mode=runtimeClass --set buildPolicy.isolation.runtimeClassName=gvisor-build) ;;
+  gvisor) args+=(--set buildPolicy.isolation.mode=runtimeClass --set buildPolicy.isolation.runtimeClassName=gvisor
+                 --set buildPolicy.isolation.snapshotter=native) ;;
   *) args+=(--set buildPolicy.isolation.mode=runtimeClass --set buildPolicy.isolation.runtimeClassName="$ISOLATION") ;;
 esac
 case "$STORAGE" in

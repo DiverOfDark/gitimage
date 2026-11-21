@@ -3,15 +3,14 @@
 `buildPolicy.isolation.mode` is required and has no default. At startup the controller runs a
 check Job with exactly the build pod's isolation settings: BuildKit lists its workers, then
 builds a two-layer image (from its own busybox, nothing is pulled) whose second layer
-hard-links a file of the first while it is mapped. If either fails, the controller exits with
-code 3 and logs `IsolationUnavailable`; a failed hard link names the fix (gVisor: exclusive
-file access).
+hard-links a file of the first. If either fails, the controller exits with code 3 and logs
+`IsolationUnavailable`; a failed hard link names the fix (gVisor: `snapshotter: native`).
 Nothing falls back to a weaker mode, and nothing builds.
 
 | Mode | Values | Build pod | Verified in CI |
 | --- | --- | --- | --- |
 | Kata | `runtimeClass`, `runtimeClassName: kata-qemu`, `privilegedInSandbox: true` | rootful BuildKit, privileged inside the VM | kind + kata-deploy (KVM runners) |
-| gVisor | `runtimeClass`, `runtimeClassName: gvisor-build` (a runsc handler with `file-access-mounts = "exclusive"`, see below) | rootless BuildKit, seccomp/AppArmor unconfined inside the sandbox | kind + runsc |
+| gVisor | `runtimeClass`, `runtimeClassName: gvisor`, `snapshotter: native` | rootless BuildKit, seccomp/AppArmor unconfined inside the sandbox | kind + runsc |
 | Sysbox | `runtimeClass`, `runtimeClassName: sysbox-runc`, `rootfulInSandbox: true` | rootful BuildKit, unprivileged, `hostUsers: false`; Pod Security `baseline` | kind + Sysbox 0.7.1 (`hack/e2e/sysbox.sh`) |
 | User namespaces | `userns` | rootless BuildKit, `hostUsers: false` | not on kind (see below) |
 | Privileged | `privileged` + `allowPrivileged: true` | rootful BuildKit, privileged on the node | kind |
@@ -22,32 +21,14 @@ guest*. That is only safe when the runtime keeps privileged in the guest: contai
 `privileged_without_host_devices = true` for the Kata handler (kata-deploy sets it). Check your
 node's containerd config before enabling it.
 
-**gVisor needs exclusive file access for build volumes.** BuildKit keeps its overlay layers on
-the build pod's state `emptyDir`. gVisor treats volumes as shared with the outside world by
-default (`--file-access-mounts=shared`), and in that mode it cannot copy up a lower-layer file
-that a running process has memory-mapped: the copy-up fails with `ENODEV`. Package managers hit
-this routinely, e.g. `apt-get` upgrading a library that `apt-get` itself has loaded stops with
-`unable to make backup link of '...libcrypto.so.3' before installing new version: No such
-device`. Give builds a runsc handler with exclusive file access; build volumes are `emptyDir`s
-private to the pod, which is exactly what exclusive assumes (it also lets gVisor cache their
-pages). containerd:
-
-```toml
-[plugins."io.containerd.cri.v1.runtime".containerd.runtimes.runsc-build]
-  runtime_type = "io.containerd.runsc.v1"
-
-[plugins."io.containerd.cri.v1.runtime".containerd.runtimes.runsc-build.options]
-  TypeUrl = "io.containerd.runsc.v1.options"
-  ConfigPath = "/etc/containerd/runsc-build.toml"   # [runsc_config] file-access-mounts = "exclusive"
-```
-
-plus a RuntimeClass `gvisor-build` with `handler: runsc-build`. Where the runtime cannot be
-configured, `snapshotter: native` also works: it copies every layer instead of stacking them,
-which avoids copy-up but makes builds several times slower and multiplies their disk use.
-(`fuse-overlayfs` does not run in gVisor at all; per-pod gVisor mount hints turn an `emptyDir`
-into a RAM-backed tmpfs.) The isolation check builds exactly this case, so a gVisor handler
-with shared file access stops the controller at startup rather than failing the first build
-that upgrades a package.
+**gVisor and `snapshotter: native`.** gVisor's overlay answers `ENODEV` to a hard link of a
+file that lives in a lower layer. Any build that does that fails, and package managers do it
+routinely: `apt-get install` upgrading a package the base image already has stops with
+`unable to make backup link of '...' before installing new version: No such device`. The
+`native` snapshotter copies layers instead of stacking them; builds are slower and use more
+disk, but every filesystem operation works. (`fuse-overlayfs` does not run in gVisor at all.)
+The isolation check builds exactly this case, so gVisor without `native` stops the controller
+at startup rather than failing the first build that upgrades a package.
 
 **Sysbox and `rootfulInSandbox`.** [Sysbox](https://github.com/nestybox/sysbox) runs the pod in
 a user namespace, gives root in the pod its capabilities there and virtualizes procfs/sysfs, so
