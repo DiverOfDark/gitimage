@@ -23,15 +23,50 @@ const TIMEOUT: Duration = Duration::from_secs(180);
 #[error("IsolationUnavailable: {0}")]
 pub struct IsolationUnavailable(pub String);
 
-/// Hash of everything the check depends on.
+/// Hash of everything the check depends on, the check itself included: a result cached by an
+/// older check does not vouch for a newer one.
 pub fn check_key(cfg: &Config) -> String {
     let iso = serde_json::to_string(&cfg.build_policy.isolation).unwrap_or_default();
     let image = crate::job::BuildkitLayout::for_config(cfg).image;
     let state = serde_json::to_string(&cfg.build.state_volume).unwrap_or_default();
-    hex::encode(&sha2::Sha256::digest(format!("{iso}|{image}|{state}").as_bytes())[..8])
+    hex::encode(
+        &sha2::Sha256::digest(format!("{iso}|{image}|{state}|{CHECK_SCRIPT}").as_bytes())[..8],
+    )
 }
 
-/// The check Job: the build overlay plus `buildctl-daemonless.sh debug workers`.
+/// Printed when the hard-link probe fails; the controller's error message quotes the log.
+const HARDLINK_FAILED: &str = "gitimage: hard links to files of a lower layer fail in this sandbox (gVisor: set buildPolicy.isolation.snapshotter: native)";
+
+/// The check: BuildKit starts and lists its workers, then builds a two-layer image whose second
+/// layer hard-links a file of the first with busybox `ln` - so the linked file is also mapped by
+/// the running process. That is what `apt-get` does when it upgrades a library it has loaded,
+/// and gVisor refuses it (`ENODEV`: no copy-up of a mapped file on a shared volume) unless
+/// BuildKit uses the native snapshotter. The image is assembled from the BuildKit image's own
+/// busybox and musl, so the check pulls nothing.
+const CHECK_SCRIPT: &str = r#"set -eu
+buildctl-daemonless.sh debug workers
+ctx=$(mktemp -d)
+mkdir -p "$ctx/bin" "$ctx/lib"
+cp /bin/busybox "$ctx/bin/"
+cp /lib/ld-musl-*.so.1 "$ctx/lib/"
+printf 'FROM scratch
+COPY bin /bin
+COPY lib /lib
+RUN ["/bin/busybox", "ln", "/bin/busybox", "/hardlink"]
+' > "$ctx/Dockerfile"
+if ! buildctl-daemonless.sh build --frontend dockerfile.v0 --local context="$ctx" --local dockerfile="$ctx" --progress=plain > "$ctx/build.log" 2>&1; then
+  tail -n 15 "$ctx/build.log"
+  echo "HARDLINK_FAILED"
+  exit 1
+fi
+echo "gitimage: isolation check passed"
+"#;
+
+fn check_script() -> String {
+    CHECK_SCRIPT.replace("HARDLINK_FAILED", HARDLINK_FAILED)
+}
+
+/// The check Job: the build overlay running [`CHECK_SCRIPT`].
 pub fn check_job(cfg: &Config, ns: &str) -> Job {
     let mut pod = PodSpec {
         restart_policy: Some("Never".into()),
@@ -43,8 +78,7 @@ pub fn check_job(cfg: &Config, ns: &str) -> Job {
     let mut c = Container {
         name: "buildkit".into(),
         image: Some(layout.image.clone()),
-        command: Some(vec!["buildctl-daemonless.sh".into()]),
-        args: Some(vec!["debug".into(), "workers".into()]),
+        command: Some(vec!["sh".into(), "-c".into(), check_script()]),
         termination_message_policy: Some("FallbackToLogsOnError".into()),
         ..Default::default()
     };
@@ -247,10 +281,11 @@ mod tests {
         let j = check_job(&cfg, "gitimage-system");
         let pod = j.spec.unwrap().template.spec.unwrap();
         assert_eq!(pod.runtime_class_name.as_deref(), Some("kata"));
-        assert_eq!(
-            pod.containers[0].args.as_ref().unwrap(),
-            &vec!["debug".to_string(), "workers".to_string()]
-        );
+        let cmd = pod.containers[0].command.as_ref().unwrap();
+        assert_eq!(cmd[..2], ["sh".to_string(), "-c".to_string()]);
+        assert!(cmd[2].contains("buildctl-daemonless.sh debug workers"));
+        assert!(cmd[2].contains(r#"RUN ["/bin/busybox", "ln", "/bin/busybox", "/hardlink"]"#));
+        assert!(cmd[2].contains("set buildPolicy.isolation.snapshotter: native"));
         assert_eq!(check_key(&cfg).len(), 16);
     }
 
