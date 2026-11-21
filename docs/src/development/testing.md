@@ -6,6 +6,7 @@ cargo test --workspace                 # unit, storage, router, snapshot tests
 ./hack/check-chart-config.sh           # chart renders configs the controller accepts
 ./hack/e2e/run.sh s3 gvisor            # kind e2e: registry|s3 x privileged|gvisor|kata-qemu|sysbox
 KEEP=1 ./hack/e2e/run.sh registry privileged   # keep the cluster for debugging
+E2E_PERSISTENT=1 ./hack/e2e/run.sh registry gvisor   # with build.stateVolume.persistent
 ```
 
 The e2e environment is a kind cluster with its own kubeconfig (`hack/.kubeconfig`) plus a

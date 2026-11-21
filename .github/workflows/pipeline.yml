@@ -145,11 +145,16 @@ jobs:
         # userns cannot run inside kind (runc cannot mount sysfs in a userns pod on a
         # containerized node). kata-qemu needs /dev/kvm: set E2E_ISOLATIONS on KVM runners.
         isolation: ${{ fromJSON(vars.E2E_ISOLATIONS || '["privileged","gvisor"]') }}
+        # build.stateVolume.persistent off, plus the persistent legs below.
+        state: [ephemeral]
         # Sysbox always runs, whatever E2E_ISOLATIONS says (hack/e2e/sysbox.sh installs it into
         # the kind worker). Listing sysbox in E2E_ISOLATIONS as well adds no duplicate jobs.
         include:
-          - { storage: registry, isolation: sysbox }
-          - { storage: s3, isolation: sysbox }
+          - { storage: registry, isolation: sysbox, state: ephemeral }
+          - { storage: s3, isolation: sysbox, state: ephemeral }
+          # One BuildKit state PVC per GitImage: rootful (privileged) and rootless (gvisor).
+          - { storage: registry, isolation: privileged, state: persistent }
+          - { storage: registry, isolation: gvisor, state: persistent }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -159,8 +164,9 @@ jobs:
         run: |
           chmod +x dist/e2e-flow   # not gitimage-amd64: the image build must set its mode itself
           command -v ssh-keyscan >/dev/null || (sudo apt-get update -q && sudo apt-get install -yq openssh-client)
-      - name: e2e ${{ matrix.storage }} / ${{ matrix.isolation }}
+      - name: e2e ${{ matrix.storage }} / ${{ matrix.isolation }} / ${{ matrix.state }}
         env:
+          E2E_PERSISTENT: ${{ matrix.state == 'persistent' && '1' || '' }}
           GITIMAGE_BINARY: dist/gitimage-amd64
           E2E_DOCKERHUB_PREFIX: ${{ runner.environment == 'self-hosted' && vars.DOCKERHUB_PREFIX || '' }}
           E2E_TEST_BIN: dist/e2e-flow

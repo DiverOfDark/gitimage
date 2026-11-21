@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Installs (or upgrades) the chart for one storage mode: ./install.sh registry|s3 [isolation-mode]
+# E2E_PERSISTENT=1 also turns on build.stateVolume.persistent.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 export PATH="$PWD/hack/bin:$PATH"
@@ -37,6 +38,8 @@ case "$STORAGE" in
   s3) args+=(--set storage.type=s3 --set storage.s3.bucket=gitimage --set storage.s3.endpoint=http://e2e-s3:8333
              --set storage.s3.secret=s3-creds --set storage.s3.pathStyle=true) ;;
 esac
+# E2E_PERSISTENT=1: one BuildKit state PVC per GitImage (kind's local-path class).
+[ -n "${E2E_PERSISTENT:-}" ] && args+=(--set build.stateVolume.persistent.size=5Gi)
 bkcfg=$(mktemp); trap 'rm -f "$bkcfg"' EXIT
 if [ -n "${E2E_DOCKERHUB_PREFIX:-}" ]; then
   printf '[registry."docker.io"]\n  mirrors = ["%s"]\n' "${E2E_DOCKERHUB_PREFIX%/}" > "$bkcfg"
