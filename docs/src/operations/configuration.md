@@ -25,6 +25,8 @@
 | `ui.enabled`, `ui.baseURL`, `ui.auth.*`, `ui.ingress.*` | `false` | [status UI](ui.md) on port 8082; `ui.auth.mode` is `none` or `oidc` |
 | `controller.replicas`, `webhook.replicas` | `2` | |
 | `controller.extraEnv` | `[]` | extra env for the controller |
+| `controller.pinTemplateImage` | `false` | also write the built image into workload templates, for scanners ([Workloads](../guide/workloads.md#image-scanners)) |
+| `webhook.crossTenantNamespaces` | `[]` | namespaces whose pods may use any namespace's GitImage images (image scanners) |
 | `node.port`, `node.healthPort` | `25050`, `25051` | gitimage-node host ports |
 | `podMonitor.enabled` | `false` | Prometheus Operator PodMonitor |
 | `logFormat`, `logLevel` | `json`, `info,kube=warn` | |

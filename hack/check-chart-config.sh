@@ -25,7 +25,7 @@ check --set buildPolicy.isolation.mode=privileged --set buildPolicy.isolation.al
 check --set buildPolicy.isolation.mode=runtimeClass --set buildPolicy.isolation.runtimeClassName=sysbox-runc \
   --set buildPolicy.isolation.rootfulInSandbox=true --set storage.registry.url=r/b --set storage.registry.pushSecret=p
 check --set buildPolicy.isolation.mode=userns --set storage.registry.url=r/b --set storage.registry.pushSecret=p \
-  --set ui.enabled=true
+  --set ui.enabled=true --set controller.pinTemplateImage=true
 check --set buildPolicy.isolation.mode=userns --set storage.registry.url=r/b --set storage.registry.pushSecret=p \
   --set ui.enabled=true --set ui.baseURL=https://gitimage.example.com --set ui.auth.mode=oidc \
   --set ui.auth.oidc.issuer=https://auth.example.com --set ui.auth.oidc.clientID=123456 \

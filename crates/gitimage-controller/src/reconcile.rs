@@ -1076,8 +1076,15 @@ async fn reconcile_inner(gi: Arc<GitImage>, ctx: Arc<Ctx>) -> Result<Action, Err
         );
     }
 
-    if status.revision.is_some() && status.revision != old.revision {
-        roller::roll(&ctx, &gi, status.revision.as_deref().unwrap_or_default()).await;
+    // With pinTemplateImage the roller runs on every reconcile, not just on a new revision:
+    // it also pins workloads created since the last build, and re-pins templates an apply
+    // reset to the placeholder. Workloads already pinned are not patched.
+    let pin_image = ctx.config.controller.pin_template_image;
+    if let Some(revision) = status.revision.as_deref()
+        && (pin_image || status.revision != old.revision)
+    {
+        let image = status.image.as_deref().filter(|_| pin_image);
+        roller::roll(&ctx, &gi, revision, image).await;
     }
     let requeue = if building {
         // A Job without a pod produces no events we watch; look again soon.

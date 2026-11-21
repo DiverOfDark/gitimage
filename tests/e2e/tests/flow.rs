@@ -82,22 +82,31 @@ async fn commit_builds_gates_and_rolls() -> anyhow::Result<()> {
     let gi = wait_built(&ns, "app", &sha2, BUILD).await?;
     let image2 = gi.status.as_ref().and_then(|s| s.image.clone()).unwrap();
     assert_ne!(image1, image2);
-    let d = wait_for(
-        "template pinned to sha2",
-        Duration::from_secs(60),
-        || async {
-            let d = ns.api::<Deployment>().get("web").await?;
-            let pin = d
-                .spec
-                .as_ref()
-                .and_then(|s| s.template.metadata.as_ref())
-                .and_then(|m| m.annotations.as_ref())
-                .and_then(|a| a.get("gitimage.dev/revision.web"))
-                .cloned();
-            Ok((pin.as_deref() == Some(sha2.as_str())).then_some(d))
-        },
-    )
-    .await;
+    // pinTemplateImage (set by hack/e2e/install.sh) writes the image next to the revision.
+    let d =
+        wait_for(
+            "template pinned to sha2",
+            Duration::from_secs(60),
+            || async {
+                let d = ns.api::<Deployment>().get("web").await?;
+                let template = &d.spec.as_ref().unwrap().template;
+                let pin = template
+                    .metadata
+                    .as_ref()
+                    .and_then(|m| m.annotations.as_ref())
+                    .and_then(|a| a.get("gitimage.dev/revision.web"))
+                    .cloned();
+                let image = template
+                    .spec
+                    .as_ref()
+                    .and_then(|s| s.containers.iter().find(|c| c.name == "web"))
+                    .and_then(|c| c.image.clone());
+                Ok((pin.as_deref() == Some(sha2.as_str())
+                    && image.as_deref() == Some(image2.as_str()))
+                .then_some(d))
+            },
+        )
+        .await;
     let _ = d?;
     let img = image2.clone();
     wait_for(
