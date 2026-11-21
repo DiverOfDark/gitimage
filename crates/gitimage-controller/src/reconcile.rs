@@ -961,6 +961,11 @@ async fn reconcile_inner(gi: Arc<GitImage>, ctx: Arc<Ctx>) -> Result<Action, Err
             {
                 let skip = j.annotations().get("gitimage.dev/skip-if-tree").cloned();
                 let started = start_build(&ctx, &gi, &sha, job_attempt(j) + 1, skip).await?;
+                if matches!(started, Started::WaitingForStateVolume) {
+                    // No Job yet: keep the request pending, or the next reconcile would see
+                    // only the failed Job and record its failure again.
+                    status.handled_rebuild = old.handled_rebuild.clone();
+                }
                 building |= on_start(&ctx, &mut status, started, generation, &sha);
             }
             Some(j) => match inspect_finished(&ctx, &gi, &status, j, &sha).await {
