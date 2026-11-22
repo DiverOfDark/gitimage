@@ -1,6 +1,9 @@
 //! Annotation, label and scheduling-gate keys. Every component reads these constants;
 //! none of them spell the strings themselves.
 
+/// Build Job annotation: the Job's attempt number (0 for the first build of a commit).
+pub const ATTEMPT_ANNOTATION: &str = "gitimage.dev/attempt";
+
 /// Prefix of the pod-template annotation `gitimage.dev/image.<container>: <gitimage>`.
 pub const IMAGE_ANNOTATION_PREFIX: &str = "gitimage.dev/image.";
 /// Prefix of the pod-template annotation `gitimage.dev/revision.<container>: <sha>`,
