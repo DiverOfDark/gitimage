@@ -33,7 +33,8 @@ check --set buildPolicy.isolation.mode=userns --set storage.registry.url=r/b --s
 check --set buildPolicy.isolation.mode=userns --set storage.registry.url=r/b --set storage.registry.pushSecret=p \
   --set build.stateVolume.persistent.size=20Gi --set build.stateVolume.persistent.storageClassName=local-path \
   --set-string 'build.stateVolume.labels.velero\.io/exclude-from-backup=true' \
-  --set-string 'build.stateVolume.annotations.k8up\.io/backup=false'
+  --set-string 'build.stateVolume.annotations.k8up\.io/backup=false' \
+  --set-json 'buildPolicy.egress.extraRules=[{"to":[{"namespaceSelector":{"matchLabels":{"kubernetes.io/metadata.name":"traefik"}},"podSelector":{"matchLabels":{"app.kubernetes.io/name":"traefik"}}}],"ports":[{"port":8443,"protocol":"TCP"}]}]'
 check --set buildPolicy.isolation.mode=runtimeClass --set buildPolicy.isolation.runtimeClassName=kata \
   --set buildPolicy.isolation.privilegedInSandbox=true --set storage.registry.url=r/b --set storage.registry.pushSecret=p \
   --set build.stateVolume.persistent.size=20Gi --set build.stateVolume.block.fsType=ext4

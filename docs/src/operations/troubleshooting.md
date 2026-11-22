@@ -10,6 +10,7 @@
 | `Failed` / `BuildFailed` | `kubectl logs job/<name>-<sha7> -c buildkit` |
 | `Failed` / `PushFailed` | controller logs (storage errors), then the build log |
 | Annotated pod is created without a gate or digest | `kubectl get mutatingwebhookconfiguration gitimage -o yaml`: `caBundle` set? webhook pods ready? |
+| Every build spends ~2 min in `load metadata for docker.io/...` | a registry mirror build pods cannot reach, often one behind an in-cluster ingress controller: [In-cluster registry mirrors](configuration.md#in-cluster-registry-mirrors) |
 | Pull fails in s3 mode | `kubectl -n gitimage-system get ds gitimage-node`: NotReady means S3 is unreachable or `port 25050 in use on 127.0.0.1` |
 
 Logs are JSON by default; `--set logFormat=text` for humans, `logLevel=info,gitimage=debug`

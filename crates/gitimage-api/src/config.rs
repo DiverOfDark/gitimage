@@ -120,7 +120,38 @@ impl Config {
     pub fn from_yaml(s: &str) -> Result<Self, ConfigError> {
         let cfg: Self = serde_saphyr::from_str(s)?;
         cfg.validate()?;
+        cfg.check_extra_egress_rules(s)?;
         Ok(cfg)
+    }
+
+    /// The Kubernetes types ignore unknown fields. A misspelled `to` would leave a rule that
+    /// allows every destination, so the rules must read back exactly as written.
+    fn check_extra_egress_rules(&self, s: &str) -> Result<(), ConfigError> {
+        let rules = &self.build_policy.egress.extra_rules;
+        if rules.is_empty() {
+            return Ok(());
+        }
+        if rules
+            .iter()
+            .any(|r| r.to.as_ref().is_none_or(Vec::is_empty))
+        {
+            return Err(ConfigError::Invalid(
+                "buildPolicy.egress.extraRules: every rule needs `to`; for any destination say \
+                 ipBlock: { cidr: 0.0.0.0/0 }"
+                    .into(),
+            ));
+        }
+        let raw: serde_json::Value = serde_saphyr::from_str(s)?;
+        let written = raw.pointer("/buildPolicy/egress/extraRules");
+        let parsed = serde_json::to_value(rules).ok();
+        if written != parsed.as_ref() {
+            return Err(ConfigError::Invalid(
+                "buildPolicy.egress.extraRules has unknown fields: a rule takes `to` (ipBlock, \
+                 namespaceSelector, podSelector) and `ports` (port, endPort, protocol)"
+                    .into(),
+            ));
+        }
+        Ok(())
     }
 
     fn validate(&self) -> Result<(), ConfigError> {
@@ -345,6 +376,11 @@ pub struct Egress {
     pub allow_internet: bool,
     #[serde(default = "yes", rename = "denyClusterCIDRs")]
     pub deny_cluster_cidrs: bool,
+    /// NetworkPolicy egress rules added to the build policy, e.g. an in-cluster registry
+    /// mirror behind an ingress controller: a LoadBalancer IP is translated to pod IPs, which
+    /// `denyClusterCIDRs` blocks. Each rule needs `to`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extra_rules: Vec<k8s_openapi::api::networking::v1::NetworkPolicyEgressRule>,
 }
 
 impl Default for Egress {
@@ -352,6 +388,7 @@ impl Default for Egress {
         Self {
             allow_internet: true,
             deny_cluster_cidrs: true,
+            extra_rules: Vec::new(),
         }
     }
 }
@@ -846,6 +883,41 @@ network: { clusterCIDRs: [10.244.0.0/16, 10.96.0.0/12] }
         let empty_dir = format!("{HOMELAB}build: {{ stateVolume: {{ {labels} }} }}\n");
         let err = Config::from_yaml(&empty_dir).unwrap_err().to_string();
         assert!(err.contains("apply to PVCs"), "{err}");
+    }
+
+    #[test]
+    fn extra_egress_rules_are_strict() {
+        let traefik = "{ namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: traefik } }, podSelector: { matchLabels: { app.kubernetes.io/name: traefik } } }";
+        let with = |rule: &str| {
+            HOMELAB.replace(
+                "runtimeClassName: kata }",
+                &format!("runtimeClassName: kata }}\n  egress: {{ extraRules: [{rule}] }}"),
+            )
+        };
+        let ok = with(&format!(
+            "{{ to: [{traefik}], ports: [{{ port: 8443, protocol: TCP }}] }}"
+        ));
+        let rules = Config::from_yaml(&ok)
+            .unwrap()
+            .build_policy
+            .egress
+            .extra_rules;
+        assert_eq!(rules.len(), 1);
+        assert!(
+            rules[0].to.as_ref().unwrap()[0]
+                .namespace_selector
+                .is_some()
+        );
+
+        // `too` would otherwise be dropped, leaving port 8443 open to everything.
+        let typo = ok.replace("{ to:", "{ too:");
+        assert!(Config::from_yaml(&typo).is_err());
+        let typo = ok.replace("podSelector", "podSelecter");
+        let err = Config::from_yaml(&typo).unwrap_err().to_string();
+        assert!(err.contains("unknown fields"), "{err}");
+        let no_to = with("{ ports: [{ port: 8443 }] }");
+        let err = Config::from_yaml(&no_to).unwrap_err().to_string();
+        assert!(err.contains("needs `to`"), "{err}");
     }
 
     #[test]
