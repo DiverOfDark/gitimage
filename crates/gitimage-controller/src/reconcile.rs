@@ -103,7 +103,7 @@ fn job_label(job: &Job, key: &str) -> Option<String> {
 
 fn job_attempt(job: &Job) -> u32 {
     job.annotations()
-        .get("gitimage.dev/attempt")
+        .get(keys::ATTEMPT_ANNOTATION)
         .and_then(|a| a.parse().ok())
         .unwrap_or(0)
 }
@@ -717,7 +717,7 @@ async fn start_build(
         .metadata
         .annotations
         .get_or_insert_with(Default::default);
-    annotations.insert("gitimage.dev/attempt".into(), attempt.number.to_string());
+    annotations.insert(keys::ATTEMPT_ANNOTATION.into(), attempt.number.to_string());
     annotations.insert(FIRST_ATTEMPT_ANNOTATION.into(), attempt.first.to_string());
     if let Some(r) = &attempt.rebuild {
         annotations.insert(keys::REBUILD_ANNOTATION.into(), r.clone());
