@@ -18,7 +18,9 @@
    container right away; otherwise it adds the scheduling gate `gitimage.dev/build`.
 6. **Release.** When the build lands, the controller patches the digest into each gated pod
    and removes the gate. It also pins the new commit into every Deployment, StatefulSet and
-   DaemonSet that uses the GitImage (`gitimage.dev/revision.<container>`), which rolls them.
+   DaemonSet that uses the GitImage (`gitimage.dev/revision.<container>`, and
+   `gitimage.dev/digest.<container>` so a rebuild of the same commit rolls too), which rolls
+   them.
 
 ```text
  git push ──> controller ──> build Job (tenant ns) ──> push endpoint ──> registry | S3

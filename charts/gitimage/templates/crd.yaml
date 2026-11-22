@@ -160,12 +160,22 @@ spec:
                 description: Newest first, at most 5 (F6).
                 items:
                   properties:
+                    attempt:
+                      description: |-
+                        The build Job attempt this record came from. Absent for records without a Job (e.g.
+                        `Reused` found before building) and for records written before this field.
+                      format: uint32
+                      minimum: 0.0
+                      nullable: true
+                      type: integer
                     contextTree:
                       description: Git tree id of `<context>` at `revision` (F7).
                       nullable: true
                       type: string
                     digest:
-                      description: "`sha256:...`; absent for a superseded build."
+                      description: |-
+                        `sha256:...`; absent for a superseded or failed build. A failed rebuild of a commit
+                        that had an image keeps that image's digest: it still serves.
                       nullable: true
                       type: string
                     finishedAt:
@@ -232,7 +242,9 @@ spec:
                 nullable: true
                 type: string
               handledRebuild:
-                description: Last `gitimage.dev/rebuild` value acted on.
+                description: |-
+                  Last `gitimage.dev/rebuild` value whose rebuild finished. A different annotation value
+                  is a rebuild request still to do.
                 nullable: true
                 type: string
               hookTokenHash:

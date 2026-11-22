@@ -84,10 +84,10 @@ token scoped to `<namespace>/<gitimage>` that dies with the build Job.
 | See everything in a browser | `ui.enabled: true`, then `kubectl -n gitimage-system port-forward svc/gitimage-ui 8082`: live build logs, workloads, waiting pods; OIDC sign-in with cluster RBAC ([docs](https://diverofdark.github.io/gitimage/operations/ui.html)) |
 | Watch a build | `kubectl get gi` (columns: Revision, Ready, Status = current BuildKit step); waiting pods get `Building myapp@3f2c9e1: step 4/12 RUN npm ci` Events |
 | Private package registries | `build.secrets: [{ id: npmrc, secretRef: { name: npm-token } }]`, then `RUN --mount=type=secret,id=npmrc,target=/root/.npmrc npm ci` |
-| Build args | `build.args: { NODE_ENV: { value: production }, TOKEN: { valueFrom: { secretKeyRef: { name: t, key: k } } } }`; every build also gets `GITIMAGE_REVISION` and `GITIMAGE_COMMIT_TIME` |
+| Build args | `build.args: { NODE_ENV: { value: production }, TOKEN: { valueFrom: { secretKeyRef: { name: t, key: k } } } }`; every build also gets `GITIMAGE_REVISION`, `GITIMAGE_COMMIT_TIME` and `GITIMAGE_REBUILD` |
 | Monorepo | one GitImage per image with `build.context: services/api`; commits that do not touch the context reuse the last image |
 | Build on push, not on poll | set `hooks.baseURL` (+ `hooks.ingress`) and paste `status.webhookURL` into GitHub/GitLab/Gitea |
-| Retry a failed build | `kubectl annotate gi myapp gitimage.dev/rebuild=$(date +%s) --overwrite` |
+| Retry a failed build, or rebuild an unchanged commit (e.g. daily) | `kubectl annotate gi myapp gitimage.dev/rebuild=$(date +%s) --overwrite`; the old image serves until the rebuild succeeds, `ARG GITIMAGE_REBUILD` busts the cache ([docs](https://diverofdark.github.io/gitimage/guide/gitimage.html#rebuilding-a-commit)) |
 | Cancel stale builds | `build.onNewCommit: cancel` (default `wait`) |
 | Pin a workload | `gitimage.dev/rollout: manual` on the Deployment |
 | ArgoCD | see [`examples/argocd/application.yaml`](examples/argocd/application.yaml) (`ignoreDifferences` for the roller and caBundle) |

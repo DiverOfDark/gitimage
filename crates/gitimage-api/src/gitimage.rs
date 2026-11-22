@@ -182,7 +182,8 @@ pub struct GitImageStatus {
     pub builds: Vec<BuildRecord>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub conditions: Vec<Condition>,
-    /// Last `gitimage.dev/rebuild` value acted on.
+    /// Last `gitimage.dev/rebuild` value whose rebuild finished. A different annotation value
+    /// is a rebuild request still to do.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub handled_rebuild: Option<String>,
     /// Last `gitimage.dev/hook-at` value acted on (debounce).
@@ -220,7 +221,8 @@ pub struct BuildRecord {
     /// The commit.
     pub revision: String,
     pub outcome: BuildOutcome,
-    /// `sha256:...`; absent for a superseded build.
+    /// `sha256:...`; absent for a superseded or failed build. A failed rebuild of a commit
+    /// that had an image keeps that image's digest: it still serves.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub digest: Option<String>,
     /// Git tree id of `<context>` at `revision` (F7).
@@ -236,6 +238,10 @@ pub struct BuildRecord {
     /// 512 characters.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+    /// The build Job attempt this record came from. Absent for records without a Job (e.g.
+    /// `Reused` found before building) and for records written before this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attempt: Option<u32>,
     /// RFC 3339.
     pub finished_at: String,
 }
@@ -346,6 +352,7 @@ interval: 5m
                     source_revision: None,
                     reason: None,
                     message: None,
+                    attempt: None,
                     finished_at: "2026-11-07T00:00:00Z".into(),
                 },
                 BuildRecord {
@@ -356,6 +363,7 @@ interval: 5m
                     source_revision: None,
                     reason: None,
                     message: None,
+                    attempt: None,
                     finished_at: "2026-11-07T00:00:00Z".into(),
                 },
             ],

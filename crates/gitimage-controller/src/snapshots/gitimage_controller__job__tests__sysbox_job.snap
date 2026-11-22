@@ -49,6 +49,7 @@ spec:
             - "--opt=build-arg:NODE_ENV=production $$(HOME)"
             - "--opt=build-arg:TOKEN=$(GITIMAGE_ARG_TOKEN)"
             - "--opt=build-arg:GITIMAGE_REVISION=3f2c9e1aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            - "--opt=build-arg:GITIMAGE_REBUILD="
             - "--secret=id=npmrc,src=/run/secrets/npmrc"
           command:
             - sh

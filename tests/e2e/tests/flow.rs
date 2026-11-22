@@ -379,6 +379,121 @@ async fn failed_build_is_reported_and_rebuild_retries() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The rebuild annotation rebuilds a commit that already built: a new Job without reuse, the new
+/// value reaches the Dockerfile as GITIMAGE_REBUILD (a cache miss from that ARG on), the old
+/// image stays current while the rebuild runs, and the Deployment rolls to the new digest.
+#[tokio::test]
+#[ignore]
+async fn rebuild_annotation_rebuilds_a_built_commit() -> anyhow::Result<()> {
+    let client = client().await?;
+    let ns = TestNs::new(&client, "e2e-rebuild").await?;
+    let gitea = Gitea::default();
+    let repo = unique("rebuild");
+    gitea.create_repo(&repo, false).await?;
+    let df = "FROM docker.io/library/busybox:1.37\nARG GITIMAGE_REBUILD\nRUN echo \"rebuild=[$GITIMAGE_REBUILD]\" > /msg\nCMD [\"sh\", \"-c\", \"cat /msg; sleep 3600\"]\n";
+    let sha = gitea
+        .commit(&repo, "main", &[("Dockerfile", df)], "rebuild")
+        .await?;
+    create_gitimage(
+        &ns,
+        "app",
+        &format!("url: {}\ninterval: 10s", Gitea::https_url(&repo)),
+    )
+    .await?;
+    let gi = wait_built(&ns, "app", &sha, BUILD).await?;
+    let image1 = gi.status.as_ref().and_then(|s| s.image.clone()).unwrap();
+    let log = log_of_image(&ns, &image1).await?;
+    assert!(log.contains("rebuild=[]"), "{log}");
+    assert_eq!(build_jobs(&ns, "app").await?.len(), 1);
+
+    let api = ns.api::<GitImage>();
+    let patch =
+        serde_json::json!({ "metadata": { "annotations": { "gitimage.dev/rebuild": "r1" } } });
+    api.patch("app", &PatchParams::default(), &Patch::Merge(&patch))
+        .await?;
+    wait_for("rebuild job", Duration::from_secs(60), || async {
+        Ok((build_jobs(&ns, "app").await?.len() >= 2).then_some(()))
+    })
+    .await?;
+    // Until the rebuild is recorded, the previous image stays current.
+    let st = api.get("app").await?.status.unwrap_or_default();
+    if st.handled_rebuild.as_deref() != Some("r1") {
+        assert_eq!(st.image.as_deref(), Some(image1.as_str()));
+        assert_eq!(st.revision.as_deref(), Some(sha.as_str()));
+    }
+    let gi = wait_for("rebuild recorded", BUILD, || async {
+        let gi = api.get("app").await?;
+        let st = gi.status.clone().unwrap_or_default();
+        if let Some(failed) = st.condition("Failed").filter(|c| c.status == "True") {
+            anyhow::bail!("rebuild failed: {} {}", failed.reason, failed.message);
+        }
+        Ok((st.handled_rebuild.as_deref() == Some("r1")).then_some(gi))
+    })
+    .await?;
+    let st = gi.status.unwrap_or_default();
+    let rec = st.record(&sha).unwrap();
+    assert_eq!(rec.outcome, BuildOutcome::Built, "{rec:?}");
+    assert_eq!(st.revision.as_deref(), Some(sha.as_str()));
+    let image2 = st.image.clone().unwrap();
+    assert_ne!(image1, image2, "the new ARG value must miss the cache");
+    let jobs = build_jobs(&ns, "app").await?;
+    assert_eq!(jobs.len(), 2, "exactly one rebuild");
+    let rebuild_job = jobs
+        .iter()
+        .find(|j| {
+            j.metadata
+                .annotations
+                .as_ref()
+                .and_then(|a| a.get("gitimage.dev/rebuild"))
+                .map(String::as_str)
+                == Some("r1")
+        })
+        .expect("the rebuild Job carries its request");
+    // Never skipped as unchanged: the clone gets no --skip-if-tree.
+    let clone_args: Vec<String> = rebuild_job
+        .spec
+        .as_ref()
+        .and_then(|s| s.template.spec.as_ref())
+        .and_then(|p| p.init_containers.as_ref())
+        .and_then(|c| c.iter().find(|c| c.name == "clone"))
+        .and_then(|c| c.args.clone())
+        .unwrap_or_default();
+    assert!(!clone_args.is_empty());
+    assert!(
+        clone_args.iter().all(|a| !a.starts_with("--skip-if-tree")),
+        "{clone_args:?}"
+    );
+
+    // Same revision, new digest: the roller pins the digest, so the Deployment rolls onto it
+    // (also without pinTemplateImage, which writes the image itself).
+    let digest2 = image2.split_once('@').map(|(_, d)| d.to_string()).unwrap();
+    wait_for(
+        "template pinned to the new digest",
+        Duration::from_secs(60),
+        || {
+            let digest2 = digest2.clone();
+            let ns = &ns;
+            async move {
+                let d = ns.api::<Deployment>().get("web").await?;
+                let pinned = d
+                    .spec
+                    .and_then(|s| s.template.metadata)
+                    .and_then(|m| m.annotations)
+                    .and_then(|a| a.get("gitimage.dev/digest.web").cloned());
+                Ok((pinned.as_deref() == Some(digest2.as_str())).then_some(()))
+            }
+        },
+    )
+    .await?;
+    let log = log_of_running(&ns, &image2).await?;
+    assert!(log.contains("rebuild=[r1]"), "{log}");
+
+    // Handled: no further build.
+    tokio::time::sleep(Duration::from_secs(20)).await;
+    assert_eq!(build_jobs(&ns, "app").await?.len(), 2);
+    Ok(())
+}
+
 /// A private repo over ssh: the controller lists refs with russh, the clone container fetches
 /// with the same transport, and the host key is checked against known_hosts.
 #[tokio::test]
@@ -748,6 +863,11 @@ fn persistent() -> bool {
 /// Runs a Deployment of GitImage `app` and returns the log of its pod running `image`.
 async fn log_of_image(ns: &TestNs, image: &str) -> anyhow::Result<String> {
     create_deployment(ns, "web", "app").await?;
+    log_of_running(ns, image).await
+}
+
+/// The log of the Deployment `web`'s pod running `image`, once there is one.
+async fn log_of_running(ns: &TestNs, image: &str) -> anyhow::Result<String> {
     let pod = wait_for(
         "pod running the image",
         Duration::from_secs(180),

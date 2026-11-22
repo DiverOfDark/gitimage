@@ -40,6 +40,8 @@ pub struct Binding {
     pub container: String,
     pub gitimage: String,
     pub revision_pin: Option<String>,
+    /// `gitimage.dev/digest.<container>`, written by the roller next to the revision.
+    pub digest_pin: Option<String>,
 }
 
 /// Annotated containers of a pod, sorted by container name.
@@ -54,6 +56,7 @@ pub fn bindings(pod: &Pod) -> Vec<Binding> {
                 container: c.to_string(),
                 gitimage: v.trim().to_string(),
                 revision_pin: ann.get(&keys::revision_annotation(c)).cloned(),
+                digest_pin: ann.get(&keys::digest_annotation(c)).cloned(),
             })
         })
         .collect();
@@ -90,7 +93,22 @@ pub fn find_container(pod: &Pod, name: &str) -> Option<Slot> {
 }
 
 /// The digest a binding resolves to right now, if its build exists.
+///
+/// A rebuild changes the digest of a revision, and the roller pins the new digest next to the
+/// revision. A cache that does not have the rebuild yet still knows the revision's previous
+/// digest: such a pod resolves to nothing (it waits gated) instead of starting on the old image.
 pub fn resolve_digest<'a>(binding: &Binding, gi: Option<&'a GitImage>) -> Option<&'a str> {
+    let digest = resolve_digest_unpinned(binding, gi)?;
+    match &binding.digest_pin {
+        Some(pin) if pin != digest => None,
+        _ => Some(digest),
+    }
+}
+
+/// [`resolve_digest`] ignoring the digest pin: the current digest of the pinned (or current)
+/// revision. The gate releaser falls back to it for a pin that never matches (a workload with
+/// `gitimage.dev/rollout: manual` whose revision was rebuilt since it was pinned).
+pub fn resolve_digest_unpinned<'a>(binding: &Binding, gi: Option<&'a GitImage>) -> Option<&'a str> {
     let status = gi?.status.as_ref()?;
     let revision = binding
         .revision_pin
@@ -330,6 +348,7 @@ spec:
             source_revision: None,
             reason: None,
             message: None,
+            attempt: None,
             finished_at: "2026-11-07T00:00:00Z".into(),
         }
     }
@@ -370,6 +389,36 @@ spec:
                 .unwrap()
                 .ends_with(OLD)
         );
+    }
+
+    #[test]
+    fn digest_pin_ahead_of_the_cache_gates_the_pod() {
+        // The roller pinned a rebuild of bbb this cache does not know yet: wait, do not start
+        // the previous image of bbb.
+        let p = web_pod(
+            "    gitimage.dev/revision.web: bbb\n    gitimage.dev/digest.web: \"sha256:3333333333333333333333333333333333333333333333333333333333333333\"",
+        );
+        let Decision::Allow(ops) = mutate(&p, "team-a", |_| Some(built()), &cfg()) else {
+            panic!()
+        };
+        let out = apply(&p, ops);
+        let spec = out.spec.unwrap();
+        assert_eq!(spec.containers[1].image.as_deref(), Some("placeholder"));
+        assert_eq!(spec.scheduling_gates.unwrap()[0].name, "gitimage.dev/build");
+        let b = &bindings(&p)[0];
+        assert_eq!(resolve_digest(b, Some(&built())), None);
+        assert_eq!(resolve_digest_unpinned(b, Some(&built())), Some(DIGEST));
+
+        // Once the cache has it, the pinned digest is used.
+        let p = web_pod(&format!(
+            "    gitimage.dev/revision.web: bbb\n    gitimage.dev/digest.web: \"{DIGEST}\""
+        ));
+        let Decision::Allow(ops) = mutate(&p, "team-a", |_| Some(built()), &cfg()) else {
+            panic!()
+        };
+        let spec = apply(&p, ops).spec.unwrap();
+        assert!(spec.containers[1].image.clone().unwrap().ends_with(DIGEST));
+        assert!(spec.scheduling_gates.is_none());
     }
 
     #[test]

@@ -16,6 +16,11 @@ use crate::context::Ctx;
 /// Template patch that pins every container bound to GitImage `name` to `revision` and, if
 /// given, to `image`. `None` when the template is already pinned.
 ///
+/// `digest`, when given, is pinned too (`gitimage.dev/digest.<container>`): a rebuild of the
+/// same revision changes only the digest, and the template must change for the workload to
+/// roll. It is given only when the image changed, so templates pinned before this annotation
+/// existed are not all rolled at once.
+///
 /// The patch is strategic-merge: `containers` and `initContainers` merge by name, so only the
 /// bound containers' `image` changes. Server-side apply would drop fields this manager set
 /// earlier for another GitImage's containers, because each roll sends one GitImage's fields.
@@ -24,6 +29,7 @@ pub fn template_patch(
     name: &str,
     revision: &str,
     image: Option<&str>,
+    digest: Option<&str>,
 ) -> Option<Value> {
     let ann = template.metadata.as_ref()?.annotations.as_ref()?;
     let spec = template.spec.as_ref();
@@ -40,7 +46,10 @@ pub fn template_patch(
         if v.trim() != name {
             continue;
         }
-        let pinned = ann.get(&keys::revision_annotation(c)).map(String::as_str) == Some(revision);
+        let pinned = ann.get(&keys::revision_annotation(c)).map(String::as_str) == Some(revision)
+            && digest.is_none_or(|d| {
+                ann.get(&keys::digest_annotation(c)).map(String::as_str) == Some(d)
+            });
         // A bound container missing from the spec makes the webhook deny its pods; leave the
         // image alone and pin the revision as before.
         let (slot, current) = match (
@@ -56,6 +65,9 @@ pub fn template_patch(
             continue;
         }
         annotations.insert(keys::revision_annotation(c), json!(revision));
+        if let Some(d) = digest {
+            annotations.insert(keys::digest_annotation(c), json!(d));
+        }
         if let (Some(slot), Some(image)) = (slot, image) {
             slot.push(json!({ "name": c, "image": image }));
         }
@@ -93,8 +105,14 @@ impl HasTemplate for DaemonSet {
     }
 }
 
-async fn roll_kind<K>(ctx: &Ctx, ns: &str, name: &str, revision: &str, image: Option<&str>)
-where
+async fn roll_kind<K>(
+    ctx: &Ctx,
+    ns: &str,
+    name: &str,
+    revision: &str,
+    image: Option<&str>,
+    digest: Option<&str>,
+) where
     K: Resource<Scope = k8s_openapi::NamespaceResourceScope, DynamicType = ()>
         + HasTemplate
         + Clone
@@ -120,7 +138,7 @@ where
         let Some(template) = w.template() else {
             continue;
         };
-        let Some(template_patch) = template_patch(template, name, revision, image) else {
+        let Some(template_patch) = template_patch(template, name, revision, image, digest) else {
             continue;
         };
         let patch = json!({ "spec": { "template": template_patch } });
@@ -133,7 +151,7 @@ where
             .await
         {
             Ok(_) => {
-                tracing::info!(kind = %K::kind(&()), namespace = ns, workload = w.name_any(), revision, image, "rolled")
+                tracing::info!(kind = %K::kind(&()), namespace = ns, workload = w.name_any(), revision, image, digest, "rolled")
             }
             Err(e) => {
                 tracing::warn!(kind = %K::kind(&()), workload = w.name_any(), error = %e, "roll failed")
@@ -143,13 +161,20 @@ where
 }
 
 /// Rolls every workload in the GitImage's namespace that uses it. `image` is written into the
-/// template too when `controller.pinTemplateImage` is set.
-pub async fn roll(ctx: &Ctx, gi: &GitImage, revision: &str, image: Option<&str>) {
+/// template too when `controller.pinTemplateImage` is set; `digest` is pinned when the image
+/// changed (see [`template_patch`]).
+pub async fn roll(
+    ctx: &Ctx,
+    gi: &GitImage,
+    revision: &str,
+    image: Option<&str>,
+    digest: Option<&str>,
+) {
     let ns = gi.namespace().unwrap_or_default();
     let name = gi.name_any();
-    roll_kind::<Deployment>(ctx, &ns, &name, revision, image).await;
-    roll_kind::<StatefulSet>(ctx, &ns, &name, revision, image).await;
-    roll_kind::<DaemonSet>(ctx, &ns, &name, revision, image).await;
+    roll_kind::<Deployment>(ctx, &ns, &name, revision, image, digest).await;
+    roll_kind::<StatefulSet>(ctx, &ns, &name, revision, image, digest).await;
+    roll_kind::<DaemonSet>(ctx, &ns, &name, revision, image, digest).await;
 }
 
 #[cfg(test)]
@@ -190,10 +215,10 @@ spec:
     - { name: other, image: placeholder }
 "#,
         );
-        let p = template_patch(&t, "myapp", "new", None).unwrap();
+        let p = template_patch(&t, "myapp", "new", None, None).unwrap();
         assert_eq!(pinned(&p), vec!["gitimage.dev/revision.web"]);
         assert!(p.get("spec").is_none(), "{p}");
-        assert!(template_patch(&t, "nothing", "new", None).is_none());
+        assert!(template_patch(&t, "nothing", "new", None, None).is_none());
     }
 
     #[test]
@@ -214,7 +239,7 @@ spec:
     - { name: other, image: placeholder }
 "#,
         );
-        let p = template_patch(&t, "myapp", "new", Some(IMG)).unwrap();
+        let p = template_patch(&t, "myapp", "new", Some(IMG), None).unwrap();
         assert_eq!(
             pinned(&p),
             vec!["gitimage.dev/revision.migrate", "gitimage.dev/revision.web"]
@@ -242,8 +267,8 @@ spec:
     - { name: web, image: placeholder }
 "#,
         );
-        assert!(template_patch(&t, "myapp", "new", None).is_none());
-        let p = template_patch(&t, "myapp", "new", Some(IMG)).unwrap();
+        assert!(template_patch(&t, "myapp", "new", None, None).is_none());
+        let p = template_patch(&t, "myapp", "new", Some(IMG), None).unwrap();
         assert_eq!(p["spec"]["containers"][0]["image"], IMG);
 
         let done = template(&format!(
@@ -257,7 +282,53 @@ spec:
     - {{ name: web, image: "{IMG}" }}
 "#
         ));
-        assert!(template_patch(&done, "myapp", "new", Some(IMG)).is_none());
+        assert!(template_patch(&done, "myapp", "new", Some(IMG), None).is_none());
+    }
+
+    #[test]
+    fn rebuild_of_the_pinned_revision_rolls_by_digest() {
+        // Pinned before the digest annotation existed: left alone unless the image changed.
+        let t = template(
+            r#"
+metadata:
+  annotations:
+    gitimage.dev/image.web: myapp
+    gitimage.dev/revision.web: sha1
+spec:
+  containers:
+    - { name: web, image: placeholder }
+"#,
+        );
+        assert!(template_patch(&t, "myapp", "sha1", None, None).is_none());
+        let p = template_patch(&t, "myapp", "sha1", None, Some("sha256:new")).unwrap();
+        assert_eq!(
+            pinned(&p),
+            vec!["gitimage.dev/digest.web", "gitimage.dev/revision.web"]
+        );
+        assert_eq!(
+            p["metadata"]["annotations"]["gitimage.dev/revision.web"],
+            "sha1"
+        );
+        assert_eq!(
+            p["metadata"]["annotations"]["gitimage.dev/digest.web"],
+            "sha256:new"
+        );
+
+        // Already at that digest (a rebuild that produced the same image): nothing rolls.
+        let same = template(
+            r#"
+metadata:
+  annotations:
+    gitimage.dev/image.web: myapp
+    gitimage.dev/revision.web: sha1
+    gitimage.dev/digest.web: "sha256:new"
+spec:
+  containers:
+    - { name: web, image: placeholder }
+"#,
+        );
+        assert!(template_patch(&same, "myapp", "sha1", None, Some("sha256:new")).is_none());
+        assert!(template_patch(&same, "myapp", "sha1", None, Some("sha256:newer")).is_some());
     }
 
     #[test]
@@ -272,7 +343,7 @@ spec:
     - { name: web, image: placeholder }
 "#,
         );
-        let p = template_patch(&t, "myapp", "new", Some(IMG)).unwrap();
+        let p = template_patch(&t, "myapp", "new", Some(IMG), None).unwrap();
         assert_eq!(pinned(&p), vec!["gitimage.dev/revision.api"]);
         assert!(p.get("spec").is_none(), "{p}");
     }

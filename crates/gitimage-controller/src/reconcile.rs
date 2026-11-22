@@ -108,6 +108,153 @@ fn job_attempt(job: &Job) -> u32 {
         .unwrap_or(0)
 }
 
+/// Job annotation: the attempt this Job's series of pod-failure retries started at. A rebuild
+/// starts a new series with its own [`MAX_ATTEMPTS`]; Jobs without it started at 0.
+const FIRST_ATTEMPT_ANNOTATION: &str = "gitimage.dev/first-attempt";
+
+/// Pod-failure retries so far in this Job's series.
+fn job_retries(job: &Job) -> u32 {
+    let first = job
+        .annotations()
+        .get(FIRST_ATTEMPT_ANNOTATION)
+        .and_then(|a| a.parse().ok())
+        .unwrap_or(0);
+    job_attempt(job).saturating_sub(first)
+}
+
+/// The `gitimage.dev/rebuild` value a rebuild Job was started for; `None` for other builds.
+fn job_rebuild(job: &Job) -> Option<&str> {
+    job.annotations()
+        .get(keys::REBUILD_ANNOTATION)
+        .map(String::as_str)
+}
+
+/// Which build of a commit [`start_build`] starts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Attempt {
+    number: u32,
+    /// The attempt this series of pod-failure retries started at.
+    first: u32,
+    /// F7 fallback: the clone exits early when the context tree equals this.
+    skip_if_tree: Option<String>,
+    /// For a requested rebuild, the `gitimage.dev/rebuild` value it is for.
+    rebuild: Option<String>,
+}
+
+impl Attempt {
+    /// The first build of a new commit.
+    fn new_commit(skip_if_tree: Option<String>) -> Self {
+        Self {
+            number: 0,
+            first: 0,
+            skip_if_tree,
+            rebuild: None,
+        }
+    }
+
+    /// A requested rebuild: never skipped as unchanged, so it never ends as `Reused`.
+    fn rebuild(number: u32, value: &str) -> Self {
+        Self {
+            number,
+            first: number,
+            skip_if_tree: None,
+            rebuild: Some(value.into()),
+        }
+    }
+
+    /// The next attempt after `job`'s pod failed: the same kind of build.
+    fn retry_of(job: &Job) -> Self {
+        Self {
+            number: job_attempt(job) + 1,
+            first: job_attempt(job) - job_retries(job),
+            skip_if_tree: job.annotations().get("gitimage.dev/skip-if-tree").cloned(),
+            rebuild: job_rebuild(job).map(str::to_string),
+        }
+    }
+}
+
+/// The current commit's newest build Job, as [`next_step`] sees it.
+#[derive(Debug, Clone, Copy)]
+struct JobView<'a> {
+    attempt: u32,
+    finished: bool,
+    /// See [`job_rebuild`].
+    rebuild: Option<&'a str>,
+}
+
+impl<'a> JobView<'a> {
+    fn of(job: &'a Job) -> Self {
+        Self {
+            attempt: job_attempt(job),
+            finished: job_finished(job),
+            rebuild: job_rebuild(job),
+        }
+    }
+}
+
+/// What the reconciler does for the current commit (once no build of an older commit holds it
+/// back).
+#[derive(Debug, PartialEq, Eq)]
+enum Next<J> {
+    /// Nothing: the commit's newest Job is recorded and no rebuild is pending.
+    Idle,
+    /// Follow this Job of the commit, which still runs and is not recorded yet.
+    Follow(J),
+    /// Record the result of this finished Job of the commit.
+    Record(J),
+    /// A new commit without a Job: reuse the last image if the context is unchanged, else build.
+    Build,
+    /// Start the requested rebuild as this attempt.
+    Rebuild { attempt: u32 },
+}
+
+/// Decides [`Next`] from the commit's newest Job, the commit's record in status (`None`: no
+/// record; `Some(attempt)`: its [`BuildRecord::attempt`]), and the pending `gitimage.dev/rebuild`
+/// value (one that differs from `handledRebuild`).
+///
+/// The newest Job is recorded when the record came from its attempt (or a later one, whose Job
+/// is gone). A record without an attempt (one without a Job, or written before records had one)
+/// counts as the newest Job's unless that Job is a rebuild: rebuild Jobs are newer than the
+/// field, so theirs carry one.
+///
+/// A Job that is not recorded yet is followed, then recorded, whatever the annotation: removing
+/// or resetting the annotation does not abandon a running rebuild, and a build that finished
+/// before a request is recorded first. Once it is recorded, a pending rebuild builds the commit
+/// again whatever its last outcome, even when its Jobs are gone (TTL). The request is handled
+/// once the Job started for that value is recorded.
+fn next_step<J>(
+    latest: Option<(J, JobView<'_>)>,
+    record: Option<Option<u32>>,
+    rebuild: Option<&str>,
+) -> Next<J> {
+    let recorded = |v: &JobView<'_>| match record {
+        None => false,
+        Some(Some(attempt)) => attempt >= v.attempt,
+        Some(None) => v.rebuild.is_none(),
+    };
+    match (latest, rebuild) {
+        (Some((j, v)), _) if !recorded(&v) => {
+            if v.finished {
+                Next::Record(j)
+            } else {
+                Next::Follow(j)
+            }
+        }
+        (_, None) if record.is_some() => Next::Idle,
+        // Without a record the newest Job, if any, is not recorded: handled above.
+        (_, None) => Next::Build,
+        // That request's Job is recorded; only a lost `handledRebuild` update gets here.
+        (Some((_, v)), Some(r)) if v.rebuild == Some(r) => Next::Idle,
+        // After both the newest Job and the record: the new Job never looks recorded.
+        (latest, Some(_)) => Next::Rebuild {
+            attempt: latest
+                .map(|(_, v)| v.attempt)
+                .max(record.flatten())
+                .map_or(0, |a| a + 1),
+        },
+    }
+}
+
 /// Reads the GitImage's git credentials (design D7: `get` only, never stored).
 async fn load_credentials(ctx: &Ctx, gi: &GitImage) -> Result<Credentials, String> {
     let Some(sr) = &gi.spec.secret_ref else {
@@ -200,6 +347,20 @@ fn push_record(status: &mut GitImageStatus, rec: BuildRecord) {
     status.builds.truncate(MAX_RECORDS);
 }
 
+/// Records a build result. A failed rebuild of a commit that has an image keeps serving that
+/// image: the failure is recorded with its digest, so `status.image` and the pods stay on it.
+fn push_result(status: &mut GitImageStatus, mut rec: BuildRecord) {
+    if rec.outcome == BuildOutcome::Failed
+        && let Some(prev) = status.record(&rec.revision)
+        && prev.digest.is_some()
+    {
+        rec.digest = prev.digest.clone();
+        rec.context_tree = prev.context_tree.clone();
+        rec.source_revision = prev.source_revision.clone();
+    }
+    push_record(status, rec);
+}
+
 fn record(revision: &str, outcome: BuildOutcome) -> BuildRecord {
     BuildRecord {
         revision: revision.into(),
@@ -209,6 +370,7 @@ fn record(revision: &str, outcome: BuildOutcome) -> BuildRecord {
         source_revision: None,
         reason: None,
         message: None,
+        attempt: None,
         finished_at: now_rfc3339(),
     }
 }
@@ -525,8 +687,7 @@ async fn start_build(
     ctx: &Arc<Ctx>,
     gi: &GitImage,
     sha: &str,
-    attempt: u32,
-    skip_if_tree: Option<String>,
+    attempt: Attempt,
 ) -> Result<Started, Error> {
     let ns = gi.namespace().unwrap_or_default();
     let mut gi_resolved = gi.clone();
@@ -537,20 +698,30 @@ async fn start_build(
     if !ensure_state_claim(ctx, gi).await? {
         return Ok(Started::WaitingForStateVolume);
     }
-    let name = job::job_name(&gi.name_any(), sha, attempt);
+    let name = job::job_name(&gi.name_any(), sha, attempt.number);
     let params = BuildParams {
         sha: sha.into(),
-        attempt,
-        skip_if_tree,
+        attempt: attempt.number,
+        skip_if_tree: attempt.skip_if_tree.clone(),
         push_auth_secret: job::push_auth_secret_name(&name),
         gitimage_image: ctx.gitimage_image.clone(),
         secrets,
+        rebuild: gi
+            .annotations()
+            .get(keys::REBUILD_ANNOTATION)
+            .cloned()
+            .unwrap_or_default(),
     };
     let mut spec = job::build_job(&gi_resolved, &ctx.config, &params);
-    spec.metadata
+    let annotations = spec
+        .metadata
         .annotations
-        .get_or_insert_with(Default::default)
-        .insert("gitimage.dev/attempt".into(), attempt.to_string());
+        .get_or_insert_with(Default::default);
+    annotations.insert("gitimage.dev/attempt".into(), attempt.number.to_string());
+    annotations.insert(FIRST_ATTEMPT_ANNOTATION.into(), attempt.first.to_string());
+    if let Some(r) = &attempt.rebuild {
+        annotations.insert(keys::REBUILD_ANNOTATION.into(), r.clone());
+    }
     let jobs: Api<Job> = Api::namespaced(ctx.client.clone(), &ns);
     let created = match jobs.create(&PostParams::default(), &spec).await {
         Ok(j) => j,
@@ -586,13 +757,19 @@ async fn start_build(
         }
         Err(e) => return Err(e.into()),
     }
-    tracing::info!(namespace = %ns, name = gi.name_any(), sha, attempt, job = %name, "build started");
+    let rebuild = attempt.rebuild.as_deref();
+    tracing::info!(namespace = %ns, name = gi.name_any(), sha, attempt = attempt.number, rebuild, job = %name, "build started");
+    let verb = if rebuild.is_some() {
+        "Rebuilding"
+    } else {
+        "Building"
+    };
     publish(
         ctx,
         gi,
         EventType::Normal,
         "BuildStarted",
-        format!("Building {} (job {name})", &sha[..sha.len().min(12)]),
+        format!("{verb} {} (job {name})", &sha[..sha.len().min(12)]),
     )
     .await;
     Ok(Started::Job(Box::new(created)))
@@ -682,7 +859,7 @@ async fn inspect_finished(
                     })
                 }
                 // No container result: the pod was evicted or its node was lost.
-                None if job_attempt(job) < MAX_ATTEMPTS => Finished::Retry,
+                None if job_retries(job) < MAX_ATTEMPTS => Finished::Retry,
                 None => Finished::Record(BuildRecord {
                     reason: Some(fail::BUILD_FAILED.into()),
                     ..record(sha, BuildOutcome::Failed)
@@ -783,13 +960,12 @@ async fn reconcile_inner(gi: Arc<GitImage>, ctx: Arc<Ctx>) -> Result<Action, Err
     namespace_setup::ensure(&ctx, &ns).await?;
     ensure_hook(&ctx, &gi, &mut status).await?;
 
-    // Retry of a failed build.
+    // A `gitimage.dev/rebuild` value not handled yet: rebuild the current commit (see
+    // `next_step`). It stays pending until that rebuild's result is recorded.
     let rebuild = gi.annotations().get(keys::REBUILD_ANNOTATION).cloned();
-    let rebuild_requested = rebuild.is_some() && rebuild != status.handled_rebuild;
-    if rebuild_requested {
-        status.builds.retain(|b| b.outcome != BuildOutcome::Failed);
-        status.handled_rebuild = rebuild;
-    }
+    let rebuild_pending = rebuild
+        .clone()
+        .filter(|r| Some(r) != status.handled_rebuild.as_ref());
     let hook_at = gi.annotations().get(keys::HOOK_AT_ANNOTATION).cloned();
     let hook_new = hook_at.is_some() && hook_at != status.handled_hook_at;
     if hook_new {
@@ -888,7 +1064,13 @@ async fn reconcile_inner(gi: Arc<GitImage>, ctx: Arc<Ctx>) -> Result<Action, Err
                     };
                     let _ = jobs_api.delete(&j.name_any(), &dp).await;
                     if status.record(&rev).is_none() {
-                        push_record(&mut status, record(&rev, BuildOutcome::Superseded));
+                        push_record(
+                            &mut status,
+                            BuildRecord {
+                                attempt: Some(job_attempt(j)),
+                                ..record(&rev, BuildOutcome::Superseded)
+                            },
+                        );
                         ctx.metrics.build("Superseded");
                     }
                     publish(
@@ -933,17 +1115,29 @@ async fn reconcile_inner(gi: Arc<GitImage>, ctx: Arc<Ctx>) -> Result<Action, Err
         }
     }
 
-    if !waiting_on_other && status.record(&sha).is_none() {
+    if !waiting_on_other {
         let mut sha_jobs: Vec<&Job> = jobs
             .iter()
             .filter(|j| job_label(j, keys::REVISION_LABEL).as_deref() == Some(sha.as_str()))
             .collect();
         sha_jobs.sort_by_key(|j| job_attempt(j));
-        match sha_jobs.last() {
-            Some(j) if !job_finished(j) => match pod_creation_failure(&ctx, &ns, j).await {
-                // The Job cannot create its pod (Pod Security, quota, ...): fail now instead
-                // of waiting for activeDeadlineSeconds.
-                Some(msg) => {
+        let latest = sha_jobs.last().map(|j| (*j, JobView::of(j)));
+        let record_attempt = status.record(&sha).map(|r| r.attempt);
+        // Whether `j` is the Job of the pending rebuild, whose result handles the request. The
+        // result of a rebuild whose value is no longer pending leaves `handledRebuild` alone.
+        let is_requested =
+            |j: &Job| rebuild_pending.is_some() && job_rebuild(j) == rebuild_pending.as_deref();
+        match next_step(latest, record_attempt, rebuild_pending.as_deref()) {
+            Next::Idle => {}
+            // The Job cannot create its pod (Pod Security, quota, ...): fail now instead of
+            // waiting for activeDeadlineSeconds. Its record carries its attempt, so once deleted
+            // for that it is not followed again.
+            Next::Follow(j) => {
+                let creation_failure = match j.metadata.deletion_timestamp {
+                    None => pod_creation_failure(&ctx, &ns, j).await,
+                    Some(_) => None,
+                };
+                if let Some(msg) = creation_failure {
                     let dp = DeleteParams {
                         propagation_policy: Some(PropagationPolicy::Foreground),
                         ..Default::default()
@@ -958,14 +1152,18 @@ async fn reconcile_inner(gi: Arc<GitImage>, ctx: Arc<Ctx>) -> Result<Action, Err
                         msg.clone(),
                     )
                     .await;
-                    push_record(
+                    push_result(
                         &mut status,
                         BuildRecord {
                             reason: Some(fail::POD_CREATION_FAILED.into()),
                             message: Some(truncate(&msg, 512)),
+                            attempt: Some(job_attempt(j)),
                             ..record(&sha, BuildOutcome::Failed)
                         },
                     );
+                    if is_requested(j) {
+                        status.handled_rebuild = rebuild_pending.clone();
+                    }
                     set_condition(
                         &mut status.conditions,
                         cond::FAILED,
@@ -974,30 +1172,29 @@ async fn reconcile_inner(gi: Arc<GitImage>, ctx: Arc<Ctx>) -> Result<Action, Err
                         &msg,
                         generation,
                     );
-                }
-                None => {
+                } else {
                     follow_job(&ctx, &gi, j);
                     building = true;
                     set_building(&ctx, &mut status, j, generation, &sha);
                 }
-            },
-            // A rebuild request: the failed Job stays until its TTL, so start a new attempt. A
-            // Job that succeeded is recorded below instead.
-            Some(j)
-                if rebuild_requested
-                    && j.status.as_ref().and_then(|s| s.failed).unwrap_or(0) > 0 =>
-            {
-                let skip = j.annotations().get("gitimage.dev/skip-if-tree").cloned();
-                let started = start_build(&ctx, &gi, &sha, job_attempt(j) + 1, skip).await?;
-                if matches!(started, Started::WaitingForStateVolume) {
-                    // No Job yet: keep the request pending, or the next reconcile would see
-                    // only the failed Job and record its failure again.
-                    status.handled_rebuild = old.handled_rebuild.clone();
+            }
+            // A rebuild request: a new attempt, after the newest Job and the recorded one.
+            Next::Rebuild { attempt } => {
+                let value = rebuild_pending.as_deref().unwrap_or_default();
+                let started =
+                    start_build(&ctx, &gi, &sha, Attempt::rebuild(attempt, value)).await?;
+                if matches!(started, Started::Job(_)) {
+                    // A failure is cleared while its retry runs. One that still serves an image
+                    // stays: dropping it would drop the image.
+                    status
+                        .builds
+                        .retain(|b| b.outcome != BuildOutcome::Failed || b.digest.is_some());
                 }
                 building |= on_start(&ctx, &mut status, started, generation, &sha);
             }
-            Some(j) => match inspect_finished(&ctx, &gi, &status, j, &sha).await {
+            Next::Record(j) => match inspect_finished(&ctx, &gi, &status, j, &sha).await {
                 Finished::Record(mut rec) => {
+                    rec.attempt = Some(job_attempt(j));
                     let outcome = format!("{:?}", rec.outcome);
                     ctx.metrics.build(&outcome);
                     let (ev_type, reason, note) = match rec.outcome {
@@ -1054,16 +1251,17 @@ async fn reconcile_inner(gi: Arc<GitImage>, ctx: Arc<Ctx>) -> Result<Action, Err
                     if let Some(uid) = &j.metadata.uid {
                         ctx.progress.lock().unwrap().remove(uid);
                     }
-                    push_record(&mut status, rec);
+                    push_result(&mut status, rec);
+                    if is_requested(j) {
+                        status.handled_rebuild = rebuild_pending.clone();
+                    }
                 }
                 Finished::Retry
                     if job_finished(j)
-                        && job_attempt(j) < MAX_ATTEMPTS
+                        && job_retries(j) < MAX_ATTEMPTS
                         && j.status.as_ref().and_then(|s| s.failed).unwrap_or(0) > 0 =>
                 {
-                    let attempt = job_attempt(j) + 1;
-                    let skip = j.annotations().get("gitimage.dev/skip-if-tree").cloned();
-                    let started = start_build(&ctx, &gi, &sha, attempt, skip).await?;
+                    let started = start_build(&ctx, &gi, &sha, Attempt::retry_of(j)).await?;
                     building |= on_start(&ctx, &mut status, started, generation, &sha);
                 }
                 Finished::Retry => {
@@ -1078,7 +1276,7 @@ async fn reconcile_inner(gi: Arc<GitImage>, ctx: Arc<Ctx>) -> Result<Action, Err
                     .await;
                 }
             },
-            None => {
+            Next::Build => {
                 let last_tree = status.last_good().and_then(|b| b.context_tree.clone());
                 let reused = match (&last_tree, status.last_good()) {
                     (Some(tree), Some(last)) => ctx
@@ -1112,7 +1310,8 @@ async fn reconcile_inner(gi: Arc<GitImage>, ctx: Arc<Ctx>) -> Result<Action, Err
                     .await;
                     push_record(&mut status, rec);
                 } else {
-                    let started = start_build(&ctx, &gi, &sha, 0, last_tree).await?;
+                    let started =
+                        start_build(&ctx, &gi, &sha, Attempt::new_commit(last_tree)).await?;
                     building |= on_start(&ctx, &mut status, started, generation, &sha);
                 }
             }
@@ -1136,31 +1335,38 @@ async fn reconcile_inner(gi: Arc<GitImage>, ctx: Arc<Ctx>) -> Result<Action, Err
                 .reason
                 .clone()
                 .unwrap_or_else(|| fail::BUILD_FAILED.into());
+            let detail = r
+                .message
+                .as_ref()
+                .map(|m| format!(": {m}"))
+                .unwrap_or_default();
+            // A failed rebuild of a commit that had an image.
+            let serving = if r.digest.is_some() {
+                "; the previous image still serves"
+            } else {
+                ""
+            };
             set_condition(
                 &mut status.conditions,
                 cond::FAILED,
                 true,
                 &reason,
-                &match &r.message {
-                    Some(m) => format!(
-                        "build of {} failed: {m}; push a new commit or change {}",
-                        short(&sha),
-                        keys::REBUILD_ANNOTATION
-                    ),
-                    None => format!(
-                        "build of {} failed; push a new commit or change {}",
-                        short(&sha),
-                        keys::REBUILD_ANNOTATION
-                    ),
-                },
+                &format!(
+                    "build of {} failed{detail}{serving}; push a new commit or change {}",
+                    short(&sha),
+                    keys::REBUILD_ANNOTATION
+                ),
                 generation,
             );
         }
         _ => {
-            if status
-                .condition(cond::FAILED)
-                .is_none_or(|c| c.reason != fail::SECRET_MISSING || status.record(&sha).is_some())
-            {
+            // A missing build secret stays visible while the commit has no record, or while
+            // the rebuild it blocks is still pending.
+            let still_pending = rebuild.is_some() && rebuild != status.handled_rebuild;
+            if status.condition(cond::FAILED).is_none_or(|c| {
+                c.reason != fail::SECRET_MISSING
+                    || (status.record(&sha).is_some() && !still_pending)
+            }) {
                 set_condition(
                     &mut status.conditions,
                     cond::FAILED,
@@ -1198,13 +1404,18 @@ async fn reconcile_inner(gi: Arc<GitImage>, ctx: Arc<Ctx>) -> Result<Action, Err
 
     // With pinTemplateImage the roller runs on every reconcile, not just on a new revision:
     // it also pins workloads created since the last build, and re-pins templates an apply
-    // reset to the placeholder. Workloads already pinned are not patched.
+    // reset to the placeholder. Workloads already pinned are not patched. A rebuild changes
+    // only the digest; pinning it too rolls the workloads onto it.
     let pin_image = ctx.config.controller.pin_template_image;
+    let digest = status.last_good().and_then(|b| b.digest.clone());
+    let changed =
+        status.revision != old.revision || digest != old.last_good().and_then(|b| b.digest.clone());
     if let Some(revision) = status.revision.as_deref()
-        && (pin_image || status.revision != old.revision)
+        && (pin_image || changed)
     {
         let image = status.image.as_deref().filter(|_| pin_image);
-        roller::roll(&ctx, &gi, revision, image).await;
+        let digest = digest.as_deref().filter(|_| changed);
+        roller::roll(&ctx, &gi, revision, image, digest).await;
     }
     let requeue = if building {
         // A Job without a pod produces no events we watch; look again soon.
@@ -1421,6 +1632,270 @@ mod tests {
 
         // The same error again changes nothing, so it is not patched every 30 seconds.
         assert_eq!(with_error(&after, Some(1), "boom"), after);
+    }
+
+    fn view(attempt: u32, finished: bool, rebuild: Option<&str>) -> JobView<'_> {
+        JobView {
+            attempt,
+            finished,
+            rebuild,
+        }
+    }
+
+    fn running(attempt: u32, rebuild: Option<&str>) -> Option<JobView<'_>> {
+        Some(view(attempt, false, rebuild))
+    }
+
+    fn done(attempt: u32, rebuild: Option<&str>) -> Option<JobView<'_>> {
+        Some(view(attempt, true, rebuild))
+    }
+
+    /// A record of the commit from this Job attempt.
+    fn rec(attempt: u32) -> Option<Option<u32>> {
+        Some(Some(attempt))
+    }
+
+    /// A record without an attempt: from before the field, or `Reused` without a Job.
+    const LEGACY: Option<Option<u32>> = Some(None);
+
+    fn step(
+        latest: Option<JobView<'_>>,
+        record: Option<Option<u32>>,
+        rebuild: Option<&str>,
+    ) -> Next<()> {
+        next_step(latest.map(|v| ((), v)), record, rebuild)
+    }
+
+    #[test]
+    fn commits_without_a_rebuild_request_build_once() {
+        // A new commit builds (or reuses), follows its Job, then records it; after that nothing.
+        assert_eq!(step(None, None, None), Next::Build);
+        assert_eq!(step(running(0, None), None, None), Next::Follow(()));
+        assert_eq!(step(done(0, None), None, None), Next::Record(()));
+        assert_eq!(step(done(0, None), rec(0), None), Next::Idle);
+        // Reused without a Job.
+        assert_eq!(step(None, LEGACY, None), Next::Idle);
+        // A failed build is not retried automatically, even once its Job is gone.
+        assert_eq!(step(None, rec(0), None), Next::Idle);
+        // A pod-failure retry is a new attempt, followed like the first.
+        assert_eq!(step(running(1, None), None, None), Next::Follow(()));
+        // An earlier rebuild's Job, already handled, changes nothing.
+        assert_eq!(step(done(1, Some("1")), rec(1), None), Next::Idle);
+        // An older Job than the record's (the newer ones deleted) is not recorded again.
+        assert_eq!(step(done(0, None), rec(2), None), Next::Idle);
+    }
+
+    #[test]
+    fn records_without_an_attempt_cover_all_but_rebuild_jobs() {
+        assert_eq!(step(done(0, None), LEGACY, None), Next::Idle);
+        assert_eq!(step(running(0, None), LEGACY, None), Next::Idle);
+        assert_eq!(
+            step(done(0, None), LEGACY, Some("1")),
+            Next::Rebuild { attempt: 1 }
+        );
+        assert_eq!(step(None, LEGACY, Some("1")), Next::Rebuild { attempt: 0 });
+        // Rebuild Jobs are newer than records without an attempt: theirs is still to record.
+        assert_eq!(step(running(1, Some("1")), LEGACY, None), Next::Follow(()));
+        assert_eq!(step(done(1, Some("1")), LEGACY, None), Next::Record(()));
+    }
+
+    #[test]
+    fn rebuild_request_rebuilds_whatever_the_last_outcome() {
+        // Built or reused: a new attempt after the newest Job, which still exists.
+        assert_eq!(
+            step(done(0, None), rec(0), Some("1")),
+            Next::Rebuild { attempt: 1 }
+        );
+        // Failed: the failure is recorded, its Job failed.
+        assert_eq!(
+            step(done(2, None), rec(2), Some("1")),
+            Next::Rebuild { attempt: 3 }
+        );
+        // Every Job of the commit is gone (TTL), e.g. a daily rebuild of an old commit: an
+        // attempt after the recorded one, so the new Job does not look recorded.
+        assert_eq!(step(None, rec(0), Some("1")), Next::Rebuild { attempt: 1 });
+        assert_eq!(step(None, rec(4), Some("1")), Next::Rebuild { attempt: 5 });
+        // A new commit and a request at once: no reuse, the forced build is its first build.
+        assert_eq!(step(None, None, Some("1")), Next::Rebuild { attempt: 0 });
+        // An older request's rebuild finished; this value is new.
+        assert_eq!(
+            step(done(1, Some("1")), rec(1), Some("2")),
+            Next::Rebuild { attempt: 2 }
+        );
+        // This value's rebuild is recorded but `handledRebuild` was not updated: no loop.
+        assert_eq!(step(done(1, Some("1")), rec(1), Some("1")), Next::Idle);
+    }
+
+    #[test]
+    fn rebuild_request_waits_for_a_running_build_and_records_its_own() {
+        // A build of the commit runs (a new-commit build, or an older request's rebuild): the
+        // request stays pending until it finishes.
+        assert_eq!(step(running(0, None), None, Some("1")), Next::Follow(()));
+        assert_eq!(
+            step(running(1, Some("1")), rec(0), Some("2")),
+            Next::Follow(())
+        );
+        // The rebuild itself runs, then is recorded (which handles the request), even though
+        // status still has the previous record of the commit.
+        assert_eq!(
+            step(running(1, Some("1")), rec(0), Some("1")),
+            Next::Follow(())
+        );
+        assert_eq!(
+            step(done(1, Some("1")), rec(0), Some("1")),
+            Next::Record(())
+        );
+        // A failed record is dropped when its rebuild starts.
+        assert_eq!(step(done(1, Some("1")), None, Some("1")), Next::Record(()));
+        // A build (success or failure) that finished before the request is recorded first;
+        // the rebuild follows.
+        assert_eq!(step(done(0, None), None, Some("1")), Next::Record(()));
+        assert_eq!(
+            step(done(0, None), rec(0), Some("1")),
+            Next::Rebuild { attempt: 1 }
+        );
+        // A rebuild superseded by a newer value is recorded first, then the newer one starts.
+        assert_eq!(
+            step(done(1, Some("1")), rec(0), Some("2")),
+            Next::Record(())
+        );
+        assert_eq!(
+            step(done(1, Some("1")), rec(1), Some("2")),
+            Next::Rebuild { attempt: 2 }
+        );
+    }
+
+    #[test]
+    fn a_running_rebuild_is_recorded_whatever_happens_to_the_annotation() {
+        // The annotation is removed while the rebuild runs: no request is pending, but the
+        // rebuild's result is still followed and recorded, then nothing.
+        assert_eq!(step(running(1, Some("1")), rec(0), None), Next::Follow(()));
+        assert_eq!(step(done(1, Some("1")), rec(0), None), Next::Record(()));
+        assert_eq!(step(done(1, Some("1")), rec(1), None), Next::Idle);
+        // Its pod-failure retry too.
+        assert_eq!(step(running(2, Some("1")), rec(0), None), Next::Follow(()));
+        // A sync resets it to the handled value "1" while "2" runs: the same, and no extra
+        // rebuild afterwards.
+        assert_eq!(step(running(2, Some("2")), rec(1), None), Next::Follow(()));
+        assert_eq!(step(done(2, Some("2")), rec(1), None), Next::Record(()));
+        assert_eq!(step(done(2, Some("2")), rec(2), None), Next::Idle);
+    }
+
+    #[test]
+    fn a_job_failed_for_pod_creation_is_not_followed_again() {
+        // Recorded at once and deleted; it still exists (running) until its deletion finishes.
+        assert_eq!(step(running(0, None), rec(0), None), Next::Idle);
+        // A rebuild that failed so handled its request.
+        assert_eq!(step(running(1, Some("1")), rec(1), None), Next::Idle);
+        // A newer request does not wait for it: it never had a pod.
+        assert_eq!(
+            step(running(1, Some("1")), rec(1), Some("2")),
+            Next::Rebuild { attempt: 2 }
+        );
+    }
+
+    fn job(annotations: &[(&str, &str)]) -> Job {
+        let mut j = Job::default();
+        j.metadata.annotations = Some(
+            annotations
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+        );
+        j
+    }
+
+    #[test]
+    fn rebuilds_get_their_own_pod_failure_retries() {
+        // Jobs from before the first-attempt annotation count from 0.
+        let old = job(&[("gitimage.dev/attempt", "1")]);
+        assert_eq!(job_retries(&old), 1);
+        assert_eq!(
+            Attempt::retry_of(&old),
+            Attempt {
+                number: 2,
+                first: 0,
+                skip_if_tree: None,
+                rebuild: None
+            }
+        );
+        let with_skip = job(&[
+            ("gitimage.dev/attempt", "0"),
+            ("gitimage.dev/skip-if-tree", "tree1"),
+        ]);
+        assert_eq!(
+            Attempt::retry_of(&with_skip).skip_if_tree.as_deref(),
+            Some("tree1")
+        );
+
+        // A rebuild as attempt 3 starts a new series: never skipped, retried like a first build.
+        let rebuild = Attempt::rebuild(3, "1");
+        assert_eq!((rebuild.first, rebuild.skip_if_tree.as_deref()), (3, None));
+        let j = job(&[
+            ("gitimage.dev/attempt", "3"),
+            (FIRST_ATTEMPT_ANNOTATION, "3"),
+            (keys::REBUILD_ANNOTATION, "1"),
+        ]);
+        assert_eq!(job_retries(&j), 0);
+        assert_eq!(job_rebuild(&j), Some("1"));
+        let retry = Attempt::retry_of(&j);
+        assert_eq!(
+            retry,
+            Attempt {
+                number: 4,
+                first: 3,
+                skip_if_tree: None,
+                rebuild: Some("1".into())
+            }
+        );
+        let j = job(&[
+            ("gitimage.dev/attempt", "4"),
+            (FIRST_ATTEMPT_ANNOTATION, "3"),
+        ]);
+        assert_eq!(job_retries(&j), 1);
+        assert!(job_retries(&j) < MAX_ATTEMPTS);
+    }
+
+    fn built(revision: &str, digest: &str) -> BuildRecord {
+        BuildRecord {
+            digest: Some(digest.into()),
+            context_tree: Some(format!("tree-{revision}")),
+            ..record(revision, BuildOutcome::Built)
+        }
+    }
+
+    #[test]
+    fn failed_rebuild_keeps_serving_the_previous_image() {
+        let mut status = GitImageStatus {
+            builds: vec![built("sha2", "sha256:2"), built("sha1", "sha256:1")],
+            ..Default::default()
+        };
+        push_result(
+            &mut status,
+            BuildRecord {
+                reason: Some(fail::BUILD_FAILED.into()),
+                ..record("sha2", BuildOutcome::Failed)
+            },
+        );
+        let rec = status.record("sha2").unwrap();
+        assert_eq!(rec.outcome, BuildOutcome::Failed);
+        assert_eq!(rec.reason.as_deref(), Some(fail::BUILD_FAILED));
+        assert_eq!(rec.digest.as_deref(), Some("sha256:2"));
+        assert_eq!(rec.context_tree.as_deref(), Some("tree-sha2"));
+        // Still the current image: not sha1's, and the webhook still resolves sha2.
+        assert_eq!(status.last_good().unwrap().revision, "sha2");
+        assert_eq!(status.digest_for("sha2"), Some("sha256:2"));
+        assert_eq!(status.builds.len(), 2);
+
+        // A successful rebuild replaces it with the new digest.
+        push_result(&mut status, built("sha2", "sha256:2b"));
+        assert_eq!(status.record("sha2").unwrap().outcome, BuildOutcome::Built);
+        assert_eq!(status.digest_for("sha2"), Some("sha256:2b"));
+
+        // A commit without an image fails as before: no digest.
+        push_result(&mut status, record("sha3", BuildOutcome::Failed));
+        assert_eq!(status.record("sha3").unwrap().digest, None);
+        assert_eq!(status.last_good().unwrap().revision, "sha2");
     }
 
     #[test]
