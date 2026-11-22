@@ -32,6 +32,15 @@ buildPolicy:
   egress:
     allowInternet: true
     denyClusterCIDRs: true
+    # NetworkPolicy egress rules added to the build policy; each needs `to`. E.g. a registry
+    # mirror served by an in-cluster ingress controller: its LoadBalancer IP is translated to
+    # the controller's pod IPs, which denyClusterCIDRs blocks, so BuildKit times out on the
+    # mirror and falls back to the upstream registry. Ports are the pods' ports.
+    extraRules: []
+    # - to:
+    #     - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: traefik } }
+    #       podSelector: { matchLabels: { app.kubernetes.io/name: traefik } }
+    #   ports: [{ port: 8443, protocol: TCP }]
 
 storage:
   # registry | s3

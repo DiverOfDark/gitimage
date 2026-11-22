@@ -9,6 +9,7 @@
 | `buildPolicy.isolation.rootfulInSandbox` | `false` | rootful BuildKit, unprivileged, `hostUsers: false` (Sysbox); runtimeClass only, excludes `privilegedInSandbox` |
 | `buildPolicy.egress.allowInternet` | `true` | build pods may reach the internet |
 | `buildPolicy.egress.denyClusterCIDRs` | `true` | except `network.clusterCIDRs` |
+| `buildPolicy.egress.extraRules` | `[]` | NetworkPolicy egress rules added for build pods, each with `to`; see [In-cluster registry mirrors](#in-cluster-registry-mirrors) |
 | `network.clusterCIDRs` | `[]` | pod and service CIDRs, IPv4 and IPv6 |
 | `storage.type` | `registry` | `registry` or `s3` |
 | `storage.registry.url`, `.pushSecret`, `.pullSecret`, `.insecure` | | registry mode |
@@ -74,6 +75,28 @@ build:
   Reset the PVC after building an untrusted commit.
 
 Not combinable with `medium` or `sizeLimit`. The PVC is deleted with its GitImage.
+
+## In-cluster registry mirrors
+
+Build pods may reach the internet but not `network.clusterCIDRs`. A mirror in
+`build.buildkitdConfig` served by an ingress controller in the same cluster resolves to its
+LoadBalancer IP, which the CNI translates to the controller's pod IPs, so the build policy
+drops the connection. BuildKit then waits on the mirror for about two minutes per base image
+(`[internal] load metadata for docker.io/...`) and falls back to the upstream registry, rate
+limits included. Allow the ingress controller's pods:
+
+```yaml
+buildPolicy:
+  egress:
+    extraRules:
+      - to:
+          - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: traefik } }
+            podSelector: { matchLabels: { app.kubernetes.io/name: traefik } }
+        ports: [{ port: 8443, protocol: TCP }]   # the pods' port, not the Service's
+```
+
+The rules are added to the build pods' NetworkPolicy as written; each needs `to`, and unknown
+fields fail the config. Build pods can then reach every host that ingress controller serves.
 
 ## extraObjects
 

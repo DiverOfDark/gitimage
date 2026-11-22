@@ -19,8 +19,8 @@
 - **Admission.** The mutating webhook is called only for pods carrying a
   `gitimage.dev/image.*` annotation (CEL `matchConditions`), so a webhook outage blocks only
   GitImage pods. A second entry denies any pod that references another namespace's GitImage image.
-- **Egress.** Build pods get a NetworkPolicy: DNS, the push endpoint, and the internet minus the
-  cluster CIDRs.
+- **Egress.** Build pods get a NetworkPolicy: DNS, the push endpoint, the internet minus the
+  cluster CIDRs, and any `buildPolicy.egress.extraRules`.
 - **TLS.** The controller runs its own CA (Secret `gitimage-ca`), issues the webhook and push
   certificates, renews them 30 days before expiry and patches the webhook `caBundle`.
 - **Supply chain.** Release images are signed with cosign (keyless) and carry an SBOM and

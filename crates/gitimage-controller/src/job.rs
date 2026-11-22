@@ -950,6 +950,7 @@ pub fn egress_policy(ns: &str, cfg: &Config, controller_ns: &str) -> NetworkPoli
             });
         }
     }
+    egress.extend(policy.extra_rules.iter().cloned());
     NetworkPolicy {
         metadata: ObjectMeta {
             name: Some(EGRESS_POLICY.into()),
@@ -1487,6 +1488,40 @@ build:
     #[test]
     fn egress_policy_snapshot() {
         insta::assert_yaml_snapshot!(egress_policy("team-a", &config(), "gitimage-system"));
+    }
+
+    #[test]
+    fn extra_egress_rules_are_appended() {
+        let mut cfg = config();
+        let rule: NetworkPolicyEgressRule = serde_json::from_value(serde_json::json!({
+            "to": [{
+                "namespaceSelector": { "matchLabels": { "kubernetes.io/metadata.name": "traefik" } },
+                "podSelector": { "matchLabels": { "app.kubernetes.io/name": "traefik" } }
+            }],
+            "ports": [{ "port": 8443, "protocol": "TCP" }]
+        }))
+        .unwrap();
+        cfg.build_policy.egress.extra_rules = vec![rule.clone()];
+        let base = egress_policy("team-a", &config(), "gitimage-system")
+            .spec
+            .unwrap()
+            .egress
+            .unwrap();
+        let egress = egress_policy("team-a", &cfg, "gitimage-system")
+            .spec
+            .unwrap()
+            .egress
+            .unwrap();
+        assert_eq!(egress.len(), base.len() + 1);
+        assert_eq!(egress.last(), Some(&rule));
+        // Also without internet access.
+        cfg.build_policy.egress.allow_internet = false;
+        let egress = egress_policy("team-a", &cfg, "gitimage-system")
+            .spec
+            .unwrap()
+            .egress
+            .unwrap();
+        assert_eq!(egress.last(), Some(&rule));
     }
 
     #[test]

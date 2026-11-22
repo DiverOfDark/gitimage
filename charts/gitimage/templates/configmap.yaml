@@ -28,6 +28,9 @@ data:
       egress:
         allowInternet: {{ .Values.buildPolicy.egress.allowInternet }}
         denyClusterCIDRs: {{ .Values.buildPolicy.egress.denyClusterCIDRs }}
+        {{- with .Values.buildPolicy.egress.extraRules }}
+        extraRules: {{ toJson . }}
+        {{- end }}
     storage:
       type: {{ .Values.storage.type }}
       {{- if eq .Values.storage.type "registry" }}
