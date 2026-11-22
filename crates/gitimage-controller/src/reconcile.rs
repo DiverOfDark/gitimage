@@ -178,8 +178,6 @@ impl Attempt {
 struct JobView<'a> {
     attempt: u32,
     finished: bool,
-    /// Finished without success (including a clone that found the context unchanged).
-    failed: bool,
     /// See [`job_rebuild`].
     rebuild: Option<&'a str>,
 }
@@ -189,7 +187,6 @@ impl<'a> JobView<'a> {
         Self {
             attempt: job_attempt(job),
             finished: job_finished(job),
-            failed: matches!(job_state(job), JobState::Failed { .. }),
             rebuild: job_rebuild(job),
         }
     }
@@ -199,9 +196,9 @@ impl<'a> JobView<'a> {
 /// back).
 #[derive(Debug, PartialEq, Eq)]
 enum Next<J> {
-    /// Nothing: the commit's result is recorded and no rebuild is pending.
+    /// Nothing: the commit's newest Job is recorded and no rebuild is pending.
     Idle,
-    /// Follow this Job of the commit, which still runs. A pending rebuild waits for it.
+    /// Follow this Job of the commit, which still runs and is not recorded yet.
     Follow(J),
     /// Record the result of this finished Job of the commit.
     Record(J),
@@ -211,28 +208,50 @@ enum Next<J> {
     Rebuild { attempt: u32 },
 }
 
-/// Decides [`Next`] from the commit's newest Job, whether status has a record for the commit,
-/// and the pending `gitimage.dev/rebuild` value (one that differs from `handledRebuild`).
+/// Decides [`Next`] from the commit's newest Job, the commit's record in status (`None`: no
+/// record; `Some(attempt)`: its [`BuildRecord::attempt`]), and the pending `gitimage.dev/rebuild`
+/// value (one that differs from `handledRebuild`).
 ///
-/// A pending rebuild builds the commit again whatever its last outcome, even when its Jobs are
-/// gone (TTL). It waits for a running build of the commit, and records the success of a build
-/// that finished before the request first, so that result is not lost. The request is handled
+/// The newest Job is recorded when the record came from its attempt (or a later one, whose Job
+/// is gone). A record without an attempt (one without a Job, or written before records had one)
+/// counts as the newest Job's unless that Job is a rebuild: rebuild Jobs are newer than the
+/// field, so theirs carry one.
+///
+/// A Job that is not recorded yet is followed, then recorded, whatever the annotation: removing
+/// or resetting the annotation does not abandon a running rebuild, and a build that finished
+/// before a request is recorded first. Once it is recorded, a pending rebuild builds the commit
+/// again whatever its last outcome, even when its Jobs are gone (TTL). The request is handled
 /// once the Job started for that value is recorded.
 fn next_step<J>(
     latest: Option<(J, JobView<'_>)>,
-    recorded: bool,
+    record: Option<Option<u32>>,
     rebuild: Option<&str>,
 ) -> Next<J> {
+    let recorded = |v: &JobView<'_>| match record {
+        None => false,
+        Some(Some(attempt)) => attempt >= v.attempt,
+        Some(None) => v.rebuild.is_none(),
+    };
     match (latest, rebuild) {
-        (_, None) if recorded => Next::Idle,
-        (None, None) => Next::Build,
-        (None, Some(_)) => Next::Rebuild { attempt: 0 },
-        (Some((j, v)), _) if !v.finished => Next::Follow(j),
-        (Some((j, v)), Some(r)) if v.rebuild == Some(r) => Next::Record(j),
-        (Some((_, v)), Some(_)) if recorded || v.failed => Next::Rebuild {
-            attempt: v.attempt + 1,
+        (Some((j, v)), _) if !recorded(&v) => {
+            if v.finished {
+                Next::Record(j)
+            } else {
+                Next::Follow(j)
+            }
+        }
+        (_, None) if record.is_some() => Next::Idle,
+        // Without a record the newest Job, if any, is not recorded: handled above.
+        (_, None) => Next::Build,
+        // That request's Job is recorded; only a lost `handledRebuild` update gets here.
+        (Some((_, v)), Some(r)) if v.rebuild == Some(r) => Next::Idle,
+        // After both the newest Job and the record: the new Job never looks recorded.
+        (latest, Some(_)) => Next::Rebuild {
+            attempt: latest
+                .map(|(_, v)| v.attempt)
+                .max(record.flatten())
+                .map_or(0, |a| a + 1),
         },
-        (Some((j, _)), _) => Next::Record(j),
     }
 }
 
@@ -351,6 +370,7 @@ fn record(revision: &str, outcome: BuildOutcome) -> BuildRecord {
         source_revision: None,
         reason: None,
         message: None,
+        attempt: None,
         finished_at: now_rfc3339(),
     }
 }
@@ -1044,7 +1064,13 @@ async fn reconcile_inner(gi: Arc<GitImage>, ctx: Arc<Ctx>) -> Result<Action, Err
                     };
                     let _ = jobs_api.delete(&j.name_any(), &dp).await;
                     if status.record(&rev).is_none() {
-                        push_record(&mut status, record(&rev, BuildOutcome::Superseded));
+                        push_record(
+                            &mut status,
+                            BuildRecord {
+                                attempt: Some(job_attempt(j)),
+                                ..record(&rev, BuildOutcome::Superseded)
+                            },
+                        );
                         ctx.metrics.build("Superseded");
                     }
                     publish(
@@ -1096,14 +1122,16 @@ async fn reconcile_inner(gi: Arc<GitImage>, ctx: Arc<Ctx>) -> Result<Action, Err
             .collect();
         sha_jobs.sort_by_key(|j| job_attempt(j));
         let latest = sha_jobs.last().map(|j| (*j, JobView::of(j)));
-        let recorded = status.record(&sha).is_some();
-        // Whether `j` is the Job of the pending rebuild, whose result handles the request.
+        let record_attempt = status.record(&sha).map(|r| r.attempt);
+        // Whether `j` is the Job of the pending rebuild, whose result handles the request. The
+        // result of a rebuild whose value is no longer pending leaves `handledRebuild` alone.
         let is_requested =
             |j: &Job| rebuild_pending.is_some() && job_rebuild(j) == rebuild_pending.as_deref();
-        match next_step(latest, recorded, rebuild_pending.as_deref()) {
+        match next_step(latest, record_attempt, rebuild_pending.as_deref()) {
             Next::Idle => {}
             // The Job cannot create its pod (Pod Security, quota, ...): fail now instead of
-            // waiting for activeDeadlineSeconds. Once deleted for that it only waits to go.
+            // waiting for activeDeadlineSeconds. Its record carries its attempt, so once deleted
+            // for that it is not followed again.
             Next::Follow(j) => {
                 let creation_failure = match j.metadata.deletion_timestamp {
                     None => pod_creation_failure(&ctx, &ns, j).await,
@@ -1129,6 +1157,7 @@ async fn reconcile_inner(gi: Arc<GitImage>, ctx: Arc<Ctx>) -> Result<Action, Err
                         BuildRecord {
                             reason: Some(fail::POD_CREATION_FAILED.into()),
                             message: Some(truncate(&msg, 512)),
+                            attempt: Some(job_attempt(j)),
                             ..record(&sha, BuildOutcome::Failed)
                         },
                     );
@@ -1149,7 +1178,7 @@ async fn reconcile_inner(gi: Arc<GitImage>, ctx: Arc<Ctx>) -> Result<Action, Err
                     set_building(&ctx, &mut status, j, generation, &sha);
                 }
             }
-            // A rebuild request. Finished Jobs stay until their TTL, so this is a new attempt.
+            // A rebuild request: a new attempt, after the newest Job and the recorded one.
             Next::Rebuild { attempt } => {
                 let value = rebuild_pending.as_deref().unwrap_or_default();
                 let started =
@@ -1165,6 +1194,7 @@ async fn reconcile_inner(gi: Arc<GitImage>, ctx: Arc<Ctx>) -> Result<Action, Err
             }
             Next::Record(j) => match inspect_finished(&ctx, &gi, &status, j, &sha).await {
                 Finished::Record(mut rec) => {
+                    rec.attempt = Some(job_attempt(j));
                     let outcome = format!("{:?}", rec.outcome);
                     ctx.metrics.build(&outcome);
                     let (ev_type, reason, note) = match rec.outcome {
@@ -1604,106 +1634,163 @@ mod tests {
         assert_eq!(with_error(&after, Some(1), "boom"), after);
     }
 
-    fn view(attempt: u32, finished: bool, failed: bool, rebuild: Option<&str>) -> JobView<'_> {
+    fn view(attempt: u32, finished: bool, rebuild: Option<&str>) -> JobView<'_> {
         JobView {
             attempt,
             finished,
-            failed,
             rebuild,
         }
     }
 
-    fn step(latest: Option<JobView<'_>>, recorded: bool, rebuild: Option<&str>) -> Next<()> {
-        next_step(latest.map(|v| ((), v)), recorded, rebuild)
+    fn running(attempt: u32, rebuild: Option<&str>) -> Option<JobView<'_>> {
+        Some(view(attempt, false, rebuild))
+    }
+
+    fn done(attempt: u32, rebuild: Option<&str>) -> Option<JobView<'_>> {
+        Some(view(attempt, true, rebuild))
+    }
+
+    /// A record of the commit from this Job attempt.
+    fn rec(attempt: u32) -> Option<Option<u32>> {
+        Some(Some(attempt))
+    }
+
+    /// A record without an attempt: from before the field, or `Reused` without a Job.
+    const LEGACY: Option<Option<u32>> = Some(None);
+
+    fn step(
+        latest: Option<JobView<'_>>,
+        record: Option<Option<u32>>,
+        rebuild: Option<&str>,
+    ) -> Next<()> {
+        next_step(latest.map(|v| ((), v)), record, rebuild)
     }
 
     #[test]
     fn commits_without_a_rebuild_request_build_once() {
         // A new commit builds (or reuses), follows its Job, then records it; after that nothing.
-        assert_eq!(step(None, false, None), Next::Build);
-        assert_eq!(
-            step(Some(view(0, false, false, None)), false, None),
-            Next::Follow(())
-        );
-        assert_eq!(
-            step(Some(view(0, true, true, None)), false, None),
-            Next::Record(())
-        );
-        assert_eq!(
-            step(Some(view(0, true, false, None)), true, None),
-            Next::Idle
-        );
-        assert_eq!(
-            step(Some(view(0, true, true, None)), true, None),
-            Next::Idle
-        );
+        assert_eq!(step(None, None, None), Next::Build);
+        assert_eq!(step(running(0, None), None, None), Next::Follow(()));
+        assert_eq!(step(done(0, None), None, None), Next::Record(()));
+        assert_eq!(step(done(0, None), rec(0), None), Next::Idle);
+        // Reused without a Job.
+        assert_eq!(step(None, LEGACY, None), Next::Idle);
         // A failed build is not retried automatically, even once its Job is gone.
-        assert_eq!(step(None, true, None), Next::Idle);
+        assert_eq!(step(None, rec(0), None), Next::Idle);
+        // A pod-failure retry is a new attempt, followed like the first.
+        assert_eq!(step(running(1, None), None, None), Next::Follow(()));
         // An earlier rebuild's Job, already handled, changes nothing.
+        assert_eq!(step(done(1, Some("1")), rec(1), None), Next::Idle);
+        // An older Job than the record's (the newer ones deleted) is not recorded again.
+        assert_eq!(step(done(0, None), rec(2), None), Next::Idle);
+    }
+
+    #[test]
+    fn records_without_an_attempt_cover_all_but_rebuild_jobs() {
+        assert_eq!(step(done(0, None), LEGACY, None), Next::Idle);
+        assert_eq!(step(running(0, None), LEGACY, None), Next::Idle);
         assert_eq!(
-            step(Some(view(1, true, false, Some("1"))), true, None),
-            Next::Idle
+            step(done(0, None), LEGACY, Some("1")),
+            Next::Rebuild { attempt: 1 }
         );
+        assert_eq!(step(None, LEGACY, Some("1")), Next::Rebuild { attempt: 0 });
+        // Rebuild Jobs are newer than records without an attempt: theirs is still to record.
+        assert_eq!(step(running(1, Some("1")), LEGACY, None), Next::Follow(()));
+        assert_eq!(step(done(1, Some("1")), LEGACY, None), Next::Record(()));
     }
 
     #[test]
     fn rebuild_request_rebuilds_whatever_the_last_outcome() {
         // Built or reused: a new attempt after the newest Job, which still exists.
         assert_eq!(
-            step(Some(view(0, true, false, None)), true, Some("1")),
+            step(done(0, None), rec(0), Some("1")),
             Next::Rebuild { attempt: 1 }
         );
-        // Failed (the old retry case): the failure is recorded, its Job failed.
+        // Failed: the failure is recorded, its Job failed.
         assert_eq!(
-            step(Some(view(2, true, true, None)), true, Some("1")),
+            step(done(2, None), rec(2), Some("1")),
             Next::Rebuild { attempt: 3 }
         );
-        // Every Job of the commit is gone (TTL), e.g. a daily rebuild of an old commit.
-        assert_eq!(step(None, true, Some("1")), Next::Rebuild { attempt: 0 });
+        // Every Job of the commit is gone (TTL), e.g. a daily rebuild of an old commit: an
+        // attempt after the recorded one, so the new Job does not look recorded.
+        assert_eq!(step(None, rec(0), Some("1")), Next::Rebuild { attempt: 1 });
+        assert_eq!(step(None, rec(4), Some("1")), Next::Rebuild { attempt: 5 });
         // A new commit and a request at once: no reuse, the forced build is its first build.
-        assert_eq!(step(None, false, Some("1")), Next::Rebuild { attempt: 0 });
+        assert_eq!(step(None, None, Some("1")), Next::Rebuild { attempt: 0 });
         // An older request's rebuild finished; this value is new.
         assert_eq!(
-            step(Some(view(1, true, false, Some("1"))), true, Some("2")),
+            step(done(1, Some("1")), rec(1), Some("2")),
             Next::Rebuild { attempt: 2 }
         );
-        // A failure that finished as the request came in is not recorded first.
-        assert_eq!(
-            step(Some(view(0, true, true, None)), false, Some("1")),
-            Next::Rebuild { attempt: 1 }
-        );
+        // This value's rebuild is recorded but `handledRebuild` was not updated: no loop.
+        assert_eq!(step(done(1, Some("1")), rec(1), Some("1")), Next::Idle);
     }
 
     #[test]
     fn rebuild_request_waits_for_a_running_build_and_records_its_own() {
         // A build of the commit runs (a new-commit build, or an older request's rebuild): the
         // request stays pending until it finishes.
+        assert_eq!(step(running(0, None), None, Some("1")), Next::Follow(()));
         assert_eq!(
-            step(Some(view(0, false, false, None)), false, Some("1")),
-            Next::Follow(())
-        );
-        assert_eq!(
-            step(Some(view(1, false, false, Some("1"))), true, Some("2")),
+            step(running(1, Some("1")), rec(0), Some("2")),
             Next::Follow(())
         );
         // The rebuild itself runs, then is recorded (which handles the request), even though
         // status still has the previous record of the commit.
         assert_eq!(
-            step(Some(view(1, false, false, Some("1"))), true, Some("1")),
+            step(running(1, Some("1")), rec(0), Some("1")),
             Next::Follow(())
         );
         assert_eq!(
-            step(Some(view(1, true, false, Some("1"))), true, Some("1")),
+            step(done(1, Some("1")), rec(0), Some("1")),
+            Next::Record(())
+        );
+        // A failed record is dropped when its rebuild starts.
+        assert_eq!(step(done(1, Some("1")), None, Some("1")), Next::Record(()));
+        // A build (success or failure) that finished before the request is recorded first;
+        // the rebuild follows.
+        assert_eq!(step(done(0, None), None, Some("1")), Next::Record(()));
+        assert_eq!(
+            step(done(0, None), rec(0), Some("1")),
+            Next::Rebuild { attempt: 1 }
+        );
+        // A rebuild superseded by a newer value is recorded first, then the newer one starts.
+        assert_eq!(
+            step(done(1, Some("1")), rec(0), Some("2")),
             Next::Record(())
         );
         assert_eq!(
-            step(Some(view(1, true, true, Some("1"))), false, Some("1")),
-            Next::Record(())
+            step(done(1, Some("1")), rec(1), Some("2")),
+            Next::Rebuild { attempt: 2 }
         );
-        // A success that finished before the request is recorded first; the rebuild follows.
+    }
+
+    #[test]
+    fn a_running_rebuild_is_recorded_whatever_happens_to_the_annotation() {
+        // The annotation is removed while the rebuild runs: no request is pending, but the
+        // rebuild's result is still followed and recorded, then nothing.
+        assert_eq!(step(running(1, Some("1")), rec(0), None), Next::Follow(()));
+        assert_eq!(step(done(1, Some("1")), rec(0), None), Next::Record(()));
+        assert_eq!(step(done(1, Some("1")), rec(1), None), Next::Idle);
+        // Its pod-failure retry too.
+        assert_eq!(step(running(2, Some("1")), rec(0), None), Next::Follow(()));
+        // A sync resets it to the handled value "1" while "2" runs: the same, and no extra
+        // rebuild afterwards.
+        assert_eq!(step(running(2, Some("2")), rec(1), None), Next::Follow(()));
+        assert_eq!(step(done(2, Some("2")), rec(1), None), Next::Record(()));
+        assert_eq!(step(done(2, Some("2")), rec(2), None), Next::Idle);
+    }
+
+    #[test]
+    fn a_job_failed_for_pod_creation_is_not_followed_again() {
+        // Recorded at once and deleted; it still exists (running) until its deletion finishes.
+        assert_eq!(step(running(0, None), rec(0), None), Next::Idle);
+        // A rebuild that failed so handled its request.
+        assert_eq!(step(running(1, Some("1")), rec(1), None), Next::Idle);
+        // A newer request does not wait for it: it never had a pod.
         assert_eq!(
-            step(Some(view(0, true, false, None)), false, Some("1")),
-            Next::Record(())
+            step(running(1, Some("1")), rec(1), Some("2")),
+            Next::Rebuild { attempt: 2 }
         );
     }
 

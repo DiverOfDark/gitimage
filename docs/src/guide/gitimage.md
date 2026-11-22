@@ -27,7 +27,7 @@ spec:
 | `latestRevision` | newest commit seen on the ref |
 | `revision` | commit whose image is current |
 | `image` | `<pull host>/<namespace>/<name>@sha256:...` |
-| `builds[]` | newest first, up to 10: `revision`, `outcome` (`Built`, `Reused`, `Superseded`, `Failed`), `digest`, `contextTree`, `sourceRevision`, `reason`, `finishedAt` |
+| `builds[]` | newest first, up to 10: `revision`, `outcome` (`Built`, `Reused`, `Superseded`, `Failed`), `digest`, `contextTree`, `sourceRevision`, `reason`, `attempt` (the build Job's), `finishedAt` |
 | `webhookURL` | push-hook URL to paste into the git host (needs `hooks.baseURL`) |
 | `handledRebuild` | the last `gitimage.dev/rebuild` value whose rebuild finished; a different annotation value is a rebuild still to do |
 | `conditions` | `Ready`, `Building` (message = current BuildKit step), `Failed` (reason) |
@@ -74,6 +74,9 @@ kubectl annotate gi myapp gitimage.dev/rebuild=$(date +%s) --overwrite
 - A request made while a build runs (of this commit, or of an older one with
   `onNewCommit: wait`) waits for that build, then rebuilds. `status.handledRebuild` takes the
   value once the rebuild's result is recorded.
+- A rebuild that has started always finishes and is recorded: removing the annotation, or
+  setting it back to `status.handledRebuild`, does not cancel it, and a newer value rebuilds
+  again after it.
 - Only the value matters, not what it is; a request is never repeated by itself. Do not keep
   the annotation in a GitOps-managed manifest, or a sync that resets it starts a rebuild.
 

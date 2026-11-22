@@ -305,6 +305,7 @@ mod tests {
                 source_revision: None,
                 reason: None,
                 message: None,
+                attempt: None,
                 finished_at: "t".into(),
             }],
             ..Default::default()
@@ -323,6 +324,7 @@ mod tests {
             source_revision: None,
             reason: None,
             message: None,
+            attempt: None,
             finished_at: finished_at.into(),
         };
         let status = gitimage_api::GitImageStatus {

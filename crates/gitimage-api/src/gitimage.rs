@@ -238,6 +238,10 @@ pub struct BuildRecord {
     /// 512 characters.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+    /// The build Job attempt this record came from. Absent for records without a Job (e.g.
+    /// `Reused` found before building) and for records written before this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attempt: Option<u32>,
     /// RFC 3339.
     pub finished_at: String,
 }
@@ -348,6 +352,7 @@ interval: 5m
                     source_revision: None,
                     reason: None,
                     message: None,
+                    attempt: None,
                     finished_at: "2026-11-07T00:00:00Z".into(),
                 },
                 BuildRecord {
@@ -358,6 +363,7 @@ interval: 5m
                     source_revision: None,
                     reason: None,
                     message: None,
+                    attempt: None,
                     finished_at: "2026-11-07T00:00:00Z".into(),
                 },
             ],
