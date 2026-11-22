@@ -18,6 +18,7 @@ use kube::runtime::{WatchStreamExt, watcher};
 
 pub use mutate::{
     Decision, MutateConfig, Slot, bindings, find_container, release_patch, resolve_digest,
+    resolve_digest_unpinned,
 };
 
 /// Looks a GitImage up by namespace and name.

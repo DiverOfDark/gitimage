@@ -6,9 +6,15 @@ pub const IMAGE_ANNOTATION_PREFIX: &str = "gitimage.dev/image.";
 /// Prefix of the pod-template annotation `gitimage.dev/revision.<container>: <sha>`,
 /// written by the workload roller with server-side apply.
 pub const REVISION_ANNOTATION_PREFIX: &str = "gitimage.dev/revision.";
+/// Prefix of the pod-template annotation `gitimage.dev/digest.<container>: sha256:...`, written
+/// by the workload roller next to the revision, so a rebuild of the same commit rolls too.
+pub const DIGEST_ANNOTATION_PREFIX: &str = "gitimage.dev/digest.";
 /// `gitimage.dev/rollout: manual` on a workload opts it out of automatic rollouts.
 pub const ROLLOUT_ANNOTATION: &str = "gitimage.dev/rollout";
-/// Any change of `gitimage.dev/rebuild` on a GitImage retries a failed build of the same sha.
+/// Any change of `gitimage.dev/rebuild` on a GitImage rebuilds the current commit, whatever its
+/// last outcome (built, reused or failed). The rebuild never reuses an earlier image, its value
+/// reaches the Dockerfile as [`ARG_REBUILD`], and the previous image stays current until the
+/// rebuild succeeds. A rebuild Job carries the value it was started for under the same key.
 pub const REBUILD_ANNOTATION: &str = "gitimage.dev/rebuild";
 /// Written by the hooks receiver on every replica; the leader turns it into a reconcile.
 pub const HOOK_AT_ANNOTATION: &str = "gitimage.dev/hook-at";
@@ -39,6 +45,9 @@ pub const META_COMMIT_TIME: &str = "commit-time";
 pub const ARG_REVISION: &str = "GITIMAGE_REVISION";
 /// Build arg set to the commit's committer time (unix seconds) on every build.
 pub const ARG_COMMIT_TIME: &str = "GITIMAGE_COMMIT_TIME";
+/// Build arg set to the GitImage's `gitimage.dev/rebuild` value (empty without one) on every
+/// build. A Dockerfile that declares it misses the layer cache from there on each rebuild.
+pub const ARG_REBUILD: &str = "GITIMAGE_REBUILD";
 
 /// Returns the container name if `key` is a `gitimage.dev/image.<container>` annotation.
 pub fn image_annotation_container(key: &str) -> Option<&str> {
@@ -49,6 +58,11 @@ pub fn image_annotation_container(key: &str) -> Option<&str> {
 /// `gitimage.dev/revision.<container>`
 pub fn revision_annotation(container: &str) -> String {
     format!("{REVISION_ANNOTATION_PREFIX}{container}")
+}
+
+/// `gitimage.dev/digest.<container>`
+pub fn digest_annotation(container: &str) -> String {
+    format!("{DIGEST_ANNOTATION_PREFIX}{container}")
 }
 
 #[cfg(test)]
@@ -71,5 +85,6 @@ mod tests {
     #[test]
     fn builds_revision_annotation() {
         assert_eq!(revision_annotation("web"), "gitimage.dev/revision.web");
+        assert_eq!(digest_annotation("web"), "gitimage.dev/digest.web");
     }
 }

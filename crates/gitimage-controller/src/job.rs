@@ -75,6 +75,9 @@ pub struct BuildParams {
     pub gitimage_image: String,
     /// Build secrets with their key resolved: (id, secret name, key).
     pub secrets: Vec<(String, String, String)>,
+    /// The GitImage's `gitimage.dev/rebuild` value, empty without one: build arg
+    /// `GITIMAGE_REBUILD`.
+    pub rebuild: String,
 }
 
 /// `<name>-<sha7>[-<attempt>]`, kept within 63 characters (Job names become label values).
@@ -222,6 +225,11 @@ pub fn buildctl_args(gi: &GitImage, cfg: &Config, p: &BuildParams) -> (Vec<Strin
     // After the tenant's args, so they cannot be overridden. GITIMAGE_COMMIT_TIME is only
     // known after the clone: `commit_time_wrapper` appends it at run time.
     args.push(format!("--opt=build-arg:{}={}", keys::ARG_REVISION, p.sha));
+    args.push(format!(
+        "--opt=build-arg:{}={}",
+        keys::ARG_REBUILD,
+        k8s_literal(&p.rebuild)
+    ));
     for (id, _, _) in &p.secrets {
         args.push(format!("--secret=id={id},src={SECRETS_DIR}/{id}"));
     }
@@ -1024,6 +1032,7 @@ build:
             push_auth_secret: "myapp-3f2c9e1-push".into(),
             gitimage_image: "ghcr.io/diverofdark/gitimage:test".into(),
             secrets: vec![("npmrc".into(), "npm-token".into(), "token".into())],
+            rebuild: String::new(),
         }
     }
 
@@ -1073,6 +1082,27 @@ build:
         assert!(args.contains(
             &"--secret=id=keystore_password,src=/run/secrets/keystore_password".to_string()
         ));
+    }
+
+    #[test]
+    fn every_build_gets_the_rebuild_value_as_a_build_arg() {
+        // Without the annotation the arg is empty, so a Dockerfile that declares it still hits
+        // the cache; each new value misses it from that ARG on.
+        let (args, _) = buildctl_args(&gitimage(), &config(), &params());
+        assert!(args.contains(&"--opt=build-arg:GITIMAGE_REBUILD=".to_string()));
+        let mut p = params();
+        p.rebuild = "1700000000 $(HOME)".into();
+        let (args, _) = buildctl_args(&gitimage(), &config(), &p);
+        let rebuild = args
+            .iter()
+            .position(|a| a == "--opt=build-arg:GITIMAGE_REBUILD=1700000000 $$(HOME)")
+            .expect("GITIMAGE_REBUILD, escaped for Kubernetes");
+        // After the tenant's args, like GITIMAGE_REVISION, so a build arg cannot override it.
+        let tenant = args
+            .iter()
+            .position(|a| a.starts_with("--opt=build-arg:NODE_ENV="))
+            .unwrap();
+        assert!(tenant < rebuild);
     }
 
     #[test]

@@ -13,4 +13,4 @@ The e2e environment is a kind cluster with its own kubeconfig (`hack/.kubeconfig
 registry, SeaweedFS (S3) and Gitea as containers on the `kind` network. The suite drives Gitea
 through its API and covers: commit to running digest, rollouts, tags, monorepo reuse, hooks,
 build secrets, private repos over ssh with host-key checks, the cross-tenant guard, failed builds
-and rebuilds, GC, and `IsolationUnavailable`.
+and rebuilds (of failed and of built commits), GC, and `IsolationUnavailable`.

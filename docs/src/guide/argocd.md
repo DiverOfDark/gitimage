@@ -2,7 +2,8 @@
 
 GitImage writes two things ArgoCD would report as drift:
 
-- the `gitimage.dev/revision.<container>` pod-template annotations, and with
+- the `gitimage.dev/revision.<container>` and `gitimage.dev/digest.<container>` pod-template
+  annotations, and with
   `controller.pinTemplateImage` the bound containers' `image` (field manager
   `gitimage-controller`);
 - the `caBundle` of the `gitimage` MutatingWebhookConfiguration.

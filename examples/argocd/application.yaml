@@ -1,6 +1,6 @@
 # GitImage writes two things ArgoCD would otherwise report as drift:
-#  - gitimage.dev/revision.<container> pod-template annotations (the workload roller, field
-#    manager gitimage-controller)
+#  - gitimage.dev/revision.<container> and gitimage.dev/digest.<container> pod-template
+#    annotations (the workload roller, field manager gitimage-controller)
 #  - the caBundle of the gitimage MutatingWebhookConfiguration (filled in at startup)
 apiVersion: argoproj.io/v1alpha1
 kind: Application

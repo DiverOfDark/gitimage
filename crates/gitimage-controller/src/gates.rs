@@ -7,7 +7,9 @@ use std::time::Duration;
 
 use futures::StreamExt;
 use gitimage_api::{GitImage, keys};
-use gitimage_webhook::{bindings, find_container, release_patch, resolve_digest};
+use gitimage_webhook::{
+    bindings, find_container, release_patch, resolve_digest, resolve_digest_unpinned,
+};
 use k8s_openapi::api::core::v1::Pod;
 use kube::api::{Api, Patch, PatchParams};
 use kube::runtime::controller::{Action, Controller};
@@ -22,6 +24,21 @@ use crate::context::Ctx;
 /// controller and the GitImage cache it reads are separate streams, so a status update can
 /// arrive here before the cache has it; never rely on a single event to release a pod.
 const STILL_GATED: Duration = Duration::from_secs(10);
+
+/// How long a pod waits for a GitImage cache to reach the digest its template pins
+/// (`gitimage.dev/digest.<container>`) before that pin is taken as stale.
+const PIN_GRACE: Duration = Duration::from_secs(60);
+
+/// How long the pod has existed.
+fn gated_for(pod: &Pod) -> Duration {
+    let created = pod
+        .metadata
+        .creation_timestamp
+        .as_ref()
+        .map(|t| t.0.as_second())
+        .unwrap_or(i64::MAX);
+    Duration::from_secs((chrono::Utc::now().timestamp() - created).max(0) as u64)
+}
 
 static NOT_FOUND_REPORTED: Mutex<Option<HashSet<String>>> = Mutex::new(None);
 
@@ -40,7 +57,13 @@ async fn reconcile(pod: Arc<Pod>, ctx: Arc<Ctx>) -> Result<Action, Error> {
         let Some(slot) = find_container(&pod, &b.container) else {
             continue;
         };
-        match resolve_digest(&b, gi.as_deref()) {
+        let digest = resolve_digest(&b, gi.as_deref()).or_else(|| {
+            // A digest pin that this cache has not caught up with resolves to nothing, so the
+            // pod waits for the rebuild. One that never matches is stale: after a grace
+            // period, release with the revision's current digest.
+            resolve_digest_unpinned(&b, gi.as_deref()).filter(|_| gated_for(&pod) >= PIN_GRACE)
+        });
+        match digest {
             Some(d) => images.push((slot, ctx.image_ref(&ns, &b.gitimage, d))),
             None => {
                 if gi.is_none() {

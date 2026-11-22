@@ -19,10 +19,17 @@ Init containers can be bound the same way. The GitImage must be in the pod's nam
 
 | You want | Do |
 | --- | --- |
-| Automatic rollouts | nothing: Deployments, StatefulSets and DaemonSets get `gitimage.dev/revision.<container>` pinned on each new commit |
+| Automatic rollouts | nothing: Deployments, StatefulSets and DaemonSets get `gitimage.dev/revision.<container>` pinned on each new commit, and `gitimage.dev/digest.<container>` on each new image (a [rebuild](gitimage.md#rebuilding-a-commit) of the same commit rolls too) |
 | No automatic rollouts | `gitimage.dev/rollout: manual` on the workload's metadata |
 | Jobs and CronJobs | supported; each new pod gets the current revision at creation |
 | A specific commit | set `ref` to the sha (or a tag) |
+
+A pod whose template pins a digest (`gitimage.dev/digest.<container>`) that the GitImage's
+status does not show yet, because a rebuild just finished, waits gated for a moment rather than
+start on the commit's previous image. A pin that never matches (you changed
+`gitimage.dev/revision.<container>` by hand, or a `manual` workload's commit was rebuilt since)
+is dropped after a minute: the pod gets the revision's current digest. Remove the digest
+annotation when you pin a revision by hand.
 
 A pod admitted before its image exists stays `SchedulingGated` (not `Pending` on a node, never
 `ImagePullBackOff`). While it waits, it gets Events like

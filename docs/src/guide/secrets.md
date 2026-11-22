@@ -46,13 +46,14 @@ Build args end up in the image history; use build secrets for real secrets.
 
 ### Commit metadata
 
-Every build also gets two args from GitImage, set after `build.args` so they cannot be
+Every build also gets three args from GitImage, set after `build.args` so they cannot be
 overridden:
 
 | Arg | Value |
 | --- | --- |
 | `GITIMAGE_REVISION` | full commit sha |
 | `GITIMAGE_COMMIT_TIME` | the commit's committer time, unix seconds |
+| `GITIMAGE_REBUILD` | the GitImage's `gitimage.dev/rebuild` annotation, empty without one |
 
 The build sees no `.git` (the clone is one commit deep), so these are how a Dockerfile learns
 which commit it is building. Declare the ones you use:
@@ -69,3 +70,12 @@ monotonic version number (an Android `versionCode`, for example: it stays under 
 Undeclared, they change nothing: BuildKit ignores unused args. Declared, they change on every
 commit and so invalidate the cache of every later `RUN` in that stage: declare them in the
 stage that needs them, as late as possible.
+
+`GITIMAGE_REBUILD` changes only when the annotation does. Declare it just before the steps that
+must run again on a [rebuild](gitimage.md#rebuilding-a-commit) without a new commit (a site
+build that filters posts by date, for example); everything above it stays cached:
+
+```dockerfile
+ARG GITIMAGE_REBUILD
+RUN npm run build
+```
