@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.10
+# syntax=docker/dockerfile:1.29
 # Build: cargo-chef on rust:bookworm (glibc 2.36), run: distroless/cc (glibc, libgcc, no shell).
 # The web UI is built first and embedded into the binary by crates/gitimage-controller/build.rs.
 FROM node:24-bookworm-slim AS ui
