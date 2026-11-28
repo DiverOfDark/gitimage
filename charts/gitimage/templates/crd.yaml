@@ -302,6 +302,11 @@ spec:
                     description: The build that reported it.
                     nullable: true
                     type: string
+                  sharedFilesystem:
+                    description: |-
+                      The storage does not enforce the PVC's size (e.g. `local-path`): the state shares the
+                      node's filesystem, `freeBytes` is that filesystem's and `usedBytes` is not known (0).
+                    type: boolean
                   sizeBytes:
                     default: 0
                     format: uint64

@@ -28,7 +28,7 @@ spec:
 | `revision` | commit whose image is current |
 | `image` | `<pull host>/<namespace>/<name>@sha256:...` |
 | `builds[]` | newest first, up to 10: `revision`, `outcome` (`Built`, `Reused`, `Superseded`, `Failed`), `digest`, `contextTree`, `sourceRevision`, `reason`, `message` (the error, kept after the build log is gone), `attempt` (the build Job's), `finishedAt` |
-| `stateVolume` | with `build.stateVolume.persistent`: the BuildKit state volume when the newest build started, in bytes: `sizeBytes`, `usedBytes`, `freeBytes`, `prunedBytes`, `wantFreeBytes`, `peakBytes` (the most a recent build grew it by), `emptied` (why it was emptied) |
+| `stateVolume` | with `build.stateVolume.persistent`: the BuildKit state volume when the newest build started, in bytes: `sizeBytes`, `usedBytes`, `freeBytes`, `prunedBytes`, `wantFreeBytes`, `peakBytes` (the most a recent build grew it by), `emptied` (why it was emptied), `sharedFilesystem` (the storage does not enforce the size: `freeBytes` is the node filesystem's, `usedBytes` unknown) |
 | `webhookURL` | push-hook URL to paste into the git host (needs `hooks.baseURL`) |
 | `handledRebuild` | the last `gitimage.dev/rebuild` value whose rebuild finished; a different annotation value is a rebuild still to do |
 | `conditions` | `Ready`, `Building` (message = current BuildKit step), `Failed` (reason) |

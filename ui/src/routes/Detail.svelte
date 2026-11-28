@@ -247,13 +247,20 @@
         <section class="rounded-lg border bg-card">
           <h2 class="border-b px-4 py-2.5 font-medium">Build cache</h2>
           <div class="space-y-2 px-4 py-3 text-sm">
-            <div class="flex items-baseline justify-between gap-2">
-              <span>{bytes(sv.usedBytes)} of {bytes(sv.sizeBytes)} used</span>
-              <span class="text-muted-foreground">{bytes(sv.freeBytes)} free</span>
-            </div>
-            <div class="h-2 overflow-hidden rounded-full bg-muted" role="meter" aria-valuenow={Math.round(svUsed)} aria-valuemin={0} aria-valuemax={100} aria-label="Build cache used">
-              <div class="h-full rounded-full {svUsed > 90 ? 'bg-failed' : svUsed > 75 ? 'bg-building' : 'bg-ready'}" style="width: {svUsed}%"></div>
-            </div>
+            {#if sv.sharedFilesystem}
+              <p>
+                {bytes(sv.freeBytes)} free on the node's filesystem: the storage does not enforce the
+                {bytes(sv.sizeBytes)} size.
+              </p>
+            {:else}
+              <div class="flex items-baseline justify-between gap-2">
+                <span>{bytes(sv.usedBytes)} of {bytes(sv.sizeBytes)} used</span>
+                <span class="text-muted-foreground">{bytes(sv.freeBytes)} free</span>
+              </div>
+              <div class="h-2 overflow-hidden rounded-full bg-muted" role="meter" aria-valuenow={Math.round(svUsed)} aria-valuemin={0} aria-valuemax={100} aria-label="Build cache used">
+                <div class="h-full rounded-full {svUsed > 90 ? 'bg-failed' : svUsed > 75 ? 'bg-building' : 'bg-ready'}" style="width: {svUsed}%"></div>
+              </div>
+            {/if}
             <p class="text-muted-foreground">
               When <Sha sha={sv.revision ?? ''} /> started{#if sv.observedAt}, {ago(sv.observedAt)}{/if}: pruned
               {bytes(sv.prunedBytes)} to leave {bytes(sv.wantFreeBytes)} free. Recent builds grew it by up to

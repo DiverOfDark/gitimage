@@ -385,6 +385,8 @@ pub fn state_claim(gi: &GitImage, cfg: &Config) -> Option<PersistentVolumeClaim>
 
 /// How much of a persistent state volume BuildKit may use, in bytes.
 struct StateLimits {
+    /// `size`.
+    size: u64,
     /// Never pruned below this: 10% of `size`.
     reserved: u64,
     /// Pruned down to this: 80% of `size`.
@@ -397,6 +399,7 @@ fn state_limits(cfg: &Config) -> Option<StateLimits> {
     let p = cfg.build.state_volume.persistent.as_ref()?;
     let bytes = p.size_bytes()?;
     Some(StateLimits {
+        size: bytes,
         reserved: bytes / 10,
         max_used: bytes / 10 * 8,
         min_free: p.min_free_bytes()?,
@@ -411,6 +414,7 @@ fn gc_policy(cfg: &Config) -> Option<String> {
         reserved,
         max_used,
         min_free,
+        ..
     } = state_limits(cfg)?;
     Some(format!(
         r#"
@@ -448,6 +452,7 @@ fn with_state_script(
     command: Vec<String>,
 ) -> Vec<String> {
     let Some(StateLimits {
+        size,
         reserved,
         max_used,
         min_free,
@@ -461,6 +466,7 @@ fn with_state_script(
         state_dir.into(),
         claim.into(),
         if fresh { "fresh" } else { "keep" }.into(),
+        size.to_string(),
         reserved.to_string(),
         max_used.to_string(),
         min_free.to_string(),
@@ -1490,21 +1496,22 @@ build:
         let bk = &pod.containers[0];
         let cmd = bk.command.as_ref().unwrap();
         assert_eq!(
-            &cmd[..9],
+            &cmd[..10],
             &[
                 "sh",
                 "/etc/gitimage/state.sh",
                 "/home/user/.local/share/buildkit",
                 "myapp-buildkit",
                 "keep",
+                "21474836480",
                 "2147483648",
                 "17179869184",
                 "5368709100",
                 "--"
             ]
         );
-        assert!(cmd[11].contains("GITIMAGE_COMMIT_TIME"));
-        assert_eq!(cmd[12], "buildctl-daemonless.sh");
+        assert!(cmd[12].contains("GITIMAGE_COMMIT_TIME"));
+        assert_eq!(cmd[13], "buildctl-daemonless.sh");
         assert!(
             bk.volume_mounts
                 .as_ref()
@@ -1592,8 +1599,8 @@ build:
             &cmd[3..6],
             &["sh", "/etc/gitimage/state.sh", "/var/lib/buildkit"]
         );
-        assert!(cmd[14].contains("GITIMAGE_COMMIT_TIME"));
-        assert_eq!(cmd[15], "buildctl-daemonless.sh");
+        assert!(cmd[15].contains("GITIMAGE_COMMIT_TIME"));
+        assert_eq!(cmd[16], "buildctl-daemonless.sh");
 
         let pvc = state_claim(&gitimage(), &cfg).unwrap();
         assert_eq!(pvc.spec.unwrap().volume_mode.as_deref(), Some("Block"));

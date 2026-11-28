@@ -26,6 +26,8 @@ export interface StateVolume {
   peakBytes: number;
   /** Why the volume was emptied before that build. */
   emptied?: string;
+  /** Storage that does not enforce the size (local-path): freeBytes is the node filesystem's; usedBytes unknown. */
+  sharedFilesystem?: boolean;
 }
 
 export interface GitImage {

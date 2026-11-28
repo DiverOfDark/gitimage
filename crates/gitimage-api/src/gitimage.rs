@@ -225,6 +225,10 @@ pub struct StateVolumeStatus {
     /// Why the volume was emptied before the build, if it was.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub emptied: Option<String>,
+    /// The storage does not enforce the PVC's size (e.g. `local-path`): the state shares the
+    /// node's filesystem, `freeBytes` is that filesystem's and `usedBytes` is not known (0).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub shared_filesystem: bool,
 }
 
 impl GitImageStatus {
