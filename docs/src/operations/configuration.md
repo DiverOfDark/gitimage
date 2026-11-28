@@ -22,7 +22,7 @@
 | `build.stateVolume.medium`, `.sizeLimit` | `""` | emptyDir for BuildKit's state; `Memory` = tmpfs |
 | `build.stateVolume.block` | unset | `{storageClassName, size, fsType: ext4\|ext3, formatImage}`: raw block ephemeral PVC per build, formatted and mounted in the pod (Kata on Talos) |
 | `build.stateVolume.labels`, `.annotations` | `{}` | extra metadata on the state PVCs (`block` or `persistent`), e.g. `velero.io/exclude-from-backup: "true"` |
-| `build.stateVolume.persistent` | unset | `{size, storageClassName}`: one PVC per GitImage kept between builds; see [Persistent build cache](#persistent-build-cache) |
+| `build.stateVolume.persistent` | unset | `{size, storageClassName, minFreeSpace}`: one PVC per GitImage kept between builds; see [Persistent build cache](#persistent-build-cache) |
 | `build.buildkitdConfig` | `""` | appended to the build pods' `buildkitd.toml` (registry mirrors, private registries) |
 | `hooks.baseURL`, `hooks.ingress.*` | | push hooks |
 | `ui.enabled`, `ui.baseURL`, `ui.auth.*`, `ui.ingress.*` | `false` | [status UI](ui.md) on port 8082; `ui.auth.mode` is `none` or `oidc` |
@@ -49,11 +49,23 @@ build:
     persistent:
       size: 20Gi
       storageClassName: local-path   # default class if unset
+      minFreeSpace: 25%              # free space each build starts with (default)
 ```
 
 - **Cache.** Cache hits are local, nothing is downloaded, and cache mounts keep their contents.
-  BuildKit's garbage collection keeps the state within 80% of `size`. Keep `build.cache` on: it
-  fills a new PVC (first build, after a reset or a settings change).
+  Keep `build.cache` on: it fills a new PVC (first build, after a reset or a settings change).
+- **Space.** Before each build, BuildKit prunes its least recently used cache until at most 80%
+  of `size` is used and enough is free for the build: `minFreeSpace` (a quantity such as
+  `8Gi`, or a percentage of `size`; default `25%`), or 1.25 times the most any of the last five
+  builds grew the state by, if that is more. The build log says what was pruned, by kind
+  (cache mounts, layers, base images, build contexts). A volume with under 5% free after the
+  prune (BuildKit could not start on it, or files it does not track fill it) is emptied: it
+  holds only a cache.
+- **Out of space.** A build that fills the volume anyway is retried once on an emptied volume
+  (Event `OutOfSpace`); if that fails too, the build needs more than `size`, and the GitImage
+  is `Failed` with reason `OutOfSpace` saying so. The status UI shows the volume's use, what
+  was pruned, and how much recent builds needed. On storage that does not enforce the size,
+  such as `local-path`, free space is that of the node's filesystem.
 - **One build at a time.** The PVC is `ReadWriteOnce` and BuildKit locks its state dir, so with
   `onNewCommit: cancel` the next build starts once the cancelled build's pod is gone (status:
   `waiting for the cancelled build of <sha> to stop`).

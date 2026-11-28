@@ -112,6 +112,16 @@ fn job_attempt(job: &Job) -> u32 {
 /// starts a new series with its own [`MAX_ATTEMPTS`]; Jobs without it started at 0.
 const FIRST_ATTEMPT_ANNOTATION: &str = "gitimage.dev/first-attempt";
 
+/// Job annotation: the build empties its persistent state volume first. Set on the one retry of
+/// a build that ran out of space.
+const FRESH_STATE_ANNOTATION: &str = "gitimage.dev/fresh-state";
+
+fn job_fresh_state(job: &Job) -> bool {
+    job.annotations()
+        .get(FRESH_STATE_ANNOTATION)
+        .is_some_and(|v| v == "true")
+}
+
 /// Pod-failure retries so far in this Job's series.
 fn job_retries(job: &Job) -> u32 {
     let first = job
@@ -139,6 +149,8 @@ struct Attempt {
     skip_if_tree: Option<String>,
     /// For a requested rebuild, the `gitimage.dev/rebuild` value it is for.
     rebuild: Option<String>,
+    /// Empty the persistent state volume first.
+    fresh_state: bool,
 }
 
 impl Attempt {
@@ -149,6 +161,7 @@ impl Attempt {
             first: 0,
             skip_if_tree,
             rebuild: None,
+            fresh_state: false,
         }
     }
 
@@ -159,6 +172,7 @@ impl Attempt {
             first: number,
             skip_if_tree: None,
             rebuild: Some(value.into()),
+            fresh_state: false,
         }
     }
 
@@ -169,6 +183,18 @@ impl Attempt {
             first: job_attempt(job) - job_retries(job),
             skip_if_tree: job.annotations().get("gitimage.dev/skip-if-tree").cloned(),
             rebuild: job_rebuild(job).map(str::to_string),
+            fresh_state: job_fresh_state(job),
+        }
+    }
+
+    /// The retry of `job` after it ran out of space: on an emptied state volume, with its own
+    /// pod-failure retries.
+    fn fresh_retry_of(job: &Job) -> Self {
+        let number = job_attempt(job) + 1;
+        Self {
+            first: number,
+            fresh_state: true,
+            ..Self::retry_of(job)
         }
     }
 }
@@ -508,13 +534,19 @@ fn follow_job(ctx: &Arc<Ctx>, gi: &GitImage, job: &Job) {
                 continue;
             };
             let mut lines = stream.lines();
+            let mut state = None;
             while let Ok(Some(line)) = lines.try_next().await {
+                if let Some(json) = line.trim().strip_prefix("gitimage-state ") {
+                    state = serde_json::from_str(json).ok();
+                    let _ = ctx.trigger.send(ObjectRef::new(&name).within(&ns));
+                }
                 let changed = progress.feed(&line);
                 // Every line: the failure detail is the last output line when BuildKit
                 // stops without reporting an error.
                 let snapshot = JobProgress {
                     step: progress.current(),
                     error: progress.failure(),
+                    state: state.clone(),
                 };
                 ctx.progress
                     .lock()
@@ -711,6 +743,7 @@ async fn start_build(
             .get(keys::REBUILD_ANNOTATION)
             .cloned()
             .unwrap_or_default(),
+        fresh_state: attempt.fresh_state,
     };
     let mut spec = job::build_job(&gi_resolved, &ctx.config, &params);
     let annotations = spec
@@ -721,6 +754,9 @@ async fn start_build(
     annotations.insert(FIRST_ATTEMPT_ANNOTATION.into(), attempt.first.to_string());
     if let Some(r) = &attempt.rebuild {
         annotations.insert(keys::REBUILD_ANNOTATION.into(), r.clone());
+    }
+    if attempt.fresh_state {
+        annotations.insert(FRESH_STATE_ANNOTATION.into(), "true".into());
     }
     let jobs: Api<Job> = Api::namespaced(ctx.client.clone(), &ns);
     let created = match jobs.create(&PostParams::default(), &spec).await {
@@ -779,6 +815,60 @@ async fn start_build(
 enum Finished {
     Record(BuildRecord),
     Retry,
+    /// It ran out of space on a persistent state volume: build again on an emptied one.
+    RetryFresh(String),
+}
+
+/// The error line of a build's output (the BuildKit container's termination message holds its
+/// last lines): the "no space left" one, else the last naming an error, else the last line.
+/// Progress JSON and `state.sh` reports are skipped.
+fn error_line(log: &str) -> Option<String> {
+    let lines: Vec<&str> = log
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('{') && !l.starts_with("gitimage-state "))
+        .collect();
+    lines
+        .iter()
+        .rev()
+        .find(|l| is_no_space(l))
+        .or_else(|| {
+            lines
+                .iter()
+                .rev()
+                .find(|l| l.to_ascii_lowercase().contains("error"))
+        })
+        .or_else(|| lines.last())
+        .map(|l| l.to_string())
+}
+
+/// ENOSPC, as Go ("no space left on device"), libc ("No space left on device") and `state.sh`
+/// (after a build that filled the volume) print it.
+fn is_no_space(line: &str) -> bool {
+    line.to_ascii_lowercase()
+        .contains("no space left on device")
+}
+
+/// `Failed`/`OutOfSpace` record for a build that ran out of space, saying what to change.
+fn out_of_space(ctx: &Ctx, sha: &str, fresh: bool, line: &str) -> BuildRecord {
+    let sv = &ctx.config.build.state_volume;
+    let message = match &sv.persistent {
+        Some(p) if fresh => format!(
+            "ran out of space on an emptied BuildKit state volume: the build needs more than \
+             {}. Raise build.stateVolume.persistent.size. {line}",
+            p.size
+        ),
+        Some(_) => format!("ran out of space on the BuildKit state volume. {line}"),
+        None => format!(
+            "BuildKit's state volume ran out of space: raise build.stateVolume.sizeLimit or \
+             block.size, or use build.stateVolume.persistent. {line}"
+        ),
+    };
+    BuildRecord {
+        reason: Some(fail::OUT_OF_SPACE.into()),
+        message: Some(truncate(&message, 512)),
+        ..record(sha, BuildOutcome::Failed)
+    }
 }
 
 async fn inspect_finished(
@@ -845,6 +935,27 @@ async fn inspect_finished(
             }
             match pod.as_ref().and_then(buildkit_terminated) {
                 Some((_, msg)) => {
+                    let reported = job.metadata.uid.as_ref().and_then(|u| {
+                        ctx.progress
+                            .lock()
+                            .unwrap()
+                            .get(u)
+                            .and_then(|p| p.error.clone())
+                    });
+                    if let Some(line) = [Some(msg.as_str()), reported.as_deref()]
+                        .into_iter()
+                        .flatten()
+                        .flat_map(str::lines)
+                        .find(|l| is_no_space(l))
+                    {
+                        let line = line.trim().to_string();
+                        let fresh = job_fresh_state(job);
+                        return if ctx.config.build.state_volume.persistent.is_some() && !fresh {
+                            Finished::RetryFresh(line)
+                        } else {
+                            Finished::Record(out_of_space(ctx, sha, fresh, &line))
+                        };
+                    }
                     let push = msg.contains("failed to push") || msg.contains("failed to export");
                     Finished::Record(BuildRecord {
                         reason: Some(
@@ -855,6 +966,8 @@ async fn inspect_finished(
                             }
                             .into(),
                         ),
+                        // BuildKit's own report, if any, replaces it (see `reconcile_inner`).
+                        message: error_line(&msg).map(|l| truncate(&l, 512)),
                         ..record(sha, BuildOutcome::Failed)
                     })
                 }
@@ -1233,7 +1346,9 @@ async fn reconcile_inner(gi: Arc<GitImage>, ctx: Arc<Ctx>) -> Result<Action, Err
                                         .and_then(|p| p.error.clone())
                                 })
                                 .unwrap_or_default();
-                            if !detail.is_empty() {
+                            if !detail.is_empty()
+                                && rec.reason.as_deref() != Some(fail::OUT_OF_SPACE)
+                            {
                                 rec.message = Some(truncate(&detail, 512));
                             }
                             (
@@ -1247,10 +1362,13 @@ async fn reconcile_inner(gi: Arc<GitImage>, ctx: Arc<Ctx>) -> Result<Action, Err
                             )
                         }
                     };
+                    let reason = if rec.reason.as_deref() == Some(fail::OUT_OF_SPACE) {
+                        fail::OUT_OF_SPACE
+                    } else {
+                        reason
+                    };
                     publish(&ctx, &gi, ev_type, reason, note).await;
-                    if let Some(uid) = &j.metadata.uid {
-                        ctx.progress.lock().unwrap().remove(uid);
-                    }
+                    take_state_report(&ctx, &mut status, j, &sha, true);
                     push_result(&mut status, rec);
                     if is_requested(j) {
                         status.handled_rebuild = rebuild_pending.clone();
@@ -1262,6 +1380,22 @@ async fn reconcile_inner(gi: Arc<GitImage>, ctx: Arc<Ctx>) -> Result<Action, Err
                         && j.status.as_ref().and_then(|s| s.failed).unwrap_or(0) > 0 =>
                 {
                     let started = start_build(&ctx, &gi, &sha, Attempt::retry_of(j)).await?;
+                    building |= on_start(&ctx, &mut status, started, generation, &sha);
+                }
+                Finished::RetryFresh(line) => {
+                    take_state_report(&ctx, &mut status, j, &sha, true);
+                    publish(
+                        &ctx,
+                        &gi,
+                        EventType::Warning,
+                        fail::OUT_OF_SPACE,
+                        format!(
+                            "{} ran out of space on its BuildKit state volume; building it again on an emptied volume: {line}",
+                            short(&sha)
+                        ),
+                    )
+                    .await;
+                    let started = start_build(&ctx, &gi, &sha, Attempt::fresh_retry_of(j)).await?;
                     building |= on_start(&ctx, &mut status, started, generation, &sha);
                 }
                 Finished::Retry => {
@@ -1455,6 +1589,37 @@ fn set_building(
         &format!("{}: {step}", short(sha)),
         generation,
     );
+    take_state_report(ctx, status, job, sha, false);
+}
+
+/// Copies the state volume report of `job`'s build into status, and with `done` forgets the
+/// build's progress.
+fn take_state_report(ctx: &Ctx, status: &mut GitImageStatus, job: &Job, sha: &str, done: bool) {
+    let Some(uid) = &job.metadata.uid else { return };
+    let mut progress = ctx.progress.lock().unwrap();
+    let report = progress.get(uid).and_then(|p| p.state.clone());
+    if done {
+        progress.remove(uid);
+    }
+    let Some(mut report) = report else { return };
+    // Only the first report of a build: re-reading its log must not move `observedAt`.
+    if status
+        .state_volume
+        .as_ref()
+        .and_then(|s| s.revision.as_deref())
+        == Some(sha)
+        && status
+            .state_volume
+            .as_ref()
+            .map(|s| (s.used_bytes, s.free_bytes))
+            == Some((report.used_bytes, report.free_bytes))
+    {
+        return;
+    }
+    report.revision = Some(sha.into());
+    report.observed_at = Some(now_rfc3339());
+    report.emptied = report.emptied.filter(|e| !e.is_empty());
+    status.state_volume = Some(report);
 }
 
 fn truncate(s: &str, max: usize) -> String {
@@ -1816,7 +1981,8 @@ mod tests {
                 number: 2,
                 first: 0,
                 skip_if_tree: None,
-                rebuild: None
+                rebuild: None,
+                fresh_state: false,
             }
         );
         let with_skip = job(&[
@@ -1845,7 +2011,8 @@ mod tests {
                 number: 4,
                 first: 3,
                 skip_if_tree: None,
-                rebuild: Some("1".into())
+                rebuild: Some("1".into()),
+                fresh_state: false,
             }
         );
         let j = job(&[
@@ -1854,6 +2021,62 @@ mod tests {
         ]);
         assert_eq!(job_retries(&j), 1);
         assert!(job_retries(&j) < MAX_ATTEMPTS);
+    }
+
+    #[test]
+    fn out_of_space_retry_empties_the_state_once() {
+        let j = job(&[
+            ("gitimage.dev/attempt", "1"),
+            (FIRST_ATTEMPT_ANNOTATION, "0"),
+            (keys::REBUILD_ANNOTATION, "7"),
+            ("gitimage.dev/skip-if-tree", "tree1"),
+        ]);
+        assert!(!job_fresh_state(&j));
+        // Same kind of build, a new series of pod-failure retries, on an emptied volume.
+        let fresh = Attempt::fresh_retry_of(&j);
+        assert_eq!(
+            fresh,
+            Attempt {
+                number: 2,
+                first: 2,
+                skip_if_tree: Some("tree1".into()),
+                rebuild: Some("7".into()),
+                fresh_state: true,
+            }
+        );
+        // A pod-failure retry of the fresh build stays fresh.
+        let f = job(&[
+            ("gitimage.dev/attempt", "2"),
+            (FRESH_STATE_ANNOTATION, "true"),
+        ]);
+        assert!(job_fresh_state(&f));
+        assert!(Attempt::retry_of(&f).fresh_state);
+    }
+
+    #[test]
+    fn error_line_finds_the_cause_in_the_log_tail() {
+        // What phos printed when its state volume was full: buildkitd never started.
+        let full = "gitimage: pruning the BuildKit state failed\n\
+            could not connect to unix:///run/buildkit/buildkitd.sock after 10 trials\n\
+            ========== log ==========\n\
+            time=\"2026-11-27T13:10:39Z\" level=info msg=\"auto snapshotter: using native\"\n\
+            buildkitd: mkdir /var/lib/buildkit/runc-native: no space left on device\n\
+            sh: can't kill pid 6: No such process\n";
+        assert_eq!(
+            error_line(full).as_deref(),
+            Some("buildkitd: mkdir /var/lib/buildkit/runc-native: no space left on device")
+        );
+        let failed = "{\"vertexes\":[]}\n\
+            error: failed to solve: process \"/bin/sh -c cargo build\" did not complete successfully: exit code: 101\n\
+            gitimage-state {\"sizeBytes\":1}\n";
+        assert_eq!(
+            error_line(failed).as_deref(),
+            Some(
+                "error: failed to solve: process \"/bin/sh -c cargo build\" did not complete successfully: exit code: 101"
+            )
+        );
+        assert_eq!(error_line("one\ntwo\n").as_deref(), Some("two"));
+        assert_eq!(error_line("{}\n\n"), None);
     }
 
     fn built(revision: &str, digest: &str) -> BuildRecord {

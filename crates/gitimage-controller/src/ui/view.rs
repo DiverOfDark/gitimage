@@ -1,7 +1,7 @@
 //! JSON shapes of the UI API, derived from GitImages, workloads and pods.
 
 use gitimage_api::gitimage::condition_types as cond;
-use gitimage_api::{BuildRecord, GitImage, keys};
+use gitimage_api::{BuildRecord, GitImage, StateVolumeStatus, keys};
 use gitimage_webhook::bindings;
 use k8s_openapi::api::apps::v1::{DaemonSet, Deployment, StatefulSet};
 use k8s_openapi::api::batch::v1::Job;
@@ -69,6 +69,9 @@ pub struct GitImageView {
     /// Pods held by the scheduling gate until this GitImage has an image.
     pub gated_pods: usize,
     pub builds: Vec<BuildRecord>,
+    /// The persistent BuildKit state volume as the newest build found it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state_volume: Option<StateVolumeStatus>,
 }
 
 /// `step` is the part after `<sha7>: ` of the Building condition message.
@@ -128,6 +131,7 @@ pub fn gitimage_view(
             .and_then(|v| v.as_str().map(str::to_string)),
         gated_pods,
         builds: status.builds,
+        state_volume: status.state_volume,
     }
 }
 

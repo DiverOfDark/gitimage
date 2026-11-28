@@ -206,9 +206,18 @@ impl Config {
                     "build.stateVolume.persistent excludes medium and sizeLimit".into(),
                 ));
             }
-            if quantity_bytes(&p.size).is_none_or(|b| b < 1 << 30) {
+            let Some(size) = p.size_bytes().filter(|b| *b >= 1 << 30) else {
                 return Err(ConfigError::Invalid(
                     "build.stateVolume.persistent.size must be a quantity of at least 1Gi, e.g. 20Gi"
+                        .into(),
+                ));
+            };
+            // BuildKit never prunes below 10% of `size`: more free space than the rest is unreachable.
+            if p.min_free_bytes()
+                .is_none_or(|b| b == 0 || b >= size / 10 * 9)
+            {
+                return Err(ConfigError::Invalid(
+                    "build.stateVolume.persistent.minFreeSpace must be a quantity (8Gi) or a percentage of size (30%), above 0 and below 90% of size"
                         .into(),
                 ));
             }
@@ -533,12 +542,42 @@ pub struct StateVolume {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PersistentStateVolume {
-    /// Requested size, e.g. `20Gi`. BuildKit's garbage collection keeps its state within 80%
-    /// of it.
+    /// Requested size, e.g. `20Gi`. BuildKit keeps its state within 80% of it.
     pub size: String,
     /// StorageClass of the PVCs; the default class if unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub storage_class_name: Option<String>,
+    /// Free space each build starts with at least: before building, BuildKit prunes its least
+    /// recently used cache until this much of the volume is free, or 1.25 times the most any
+    /// of the last 5 builds grew it by, if that is more. A quantity (`8Gi`) or a percentage of
+    /// `size` (`30%`), below 90%; default 25%.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_free_space: Option<String>,
+}
+
+impl PersistentStateVolume {
+    /// Default [`Self::min_free_space`], in percent of `size`.
+    pub const DEFAULT_MIN_FREE_PERCENT: u64 = 25;
+
+    /// `size` in bytes, if it parses.
+    pub fn size_bytes(&self) -> Option<u64> {
+        quantity_bytes(&self.size)
+    }
+
+    /// [`Self::min_free_space`] in bytes, if `size` and it parse.
+    pub fn min_free_bytes(&self) -> Option<u64> {
+        let size = self.size_bytes()?;
+        match self.min_free_space.as_deref().map(str::trim) {
+            None => Some(size / 100 * Self::DEFAULT_MIN_FREE_PERCENT),
+            Some(q) => match q.strip_suffix('%') {
+                Some(pct) => {
+                    let pct: f64 = pct.trim().parse().ok()?;
+                    (pct.is_finite() && pct >= 0.0).then(|| (size as f64 * pct / 100.0) as u64)
+                }
+                None => quantity_bytes(q),
+            },
+        }
+    }
 }
 
 impl StateVolume {
@@ -857,6 +896,32 @@ network: { clusterCIDRs: [10.244.0.0/16, 10.96.0.0/12] }
         }
         let memory = ok.replace("{ persistent:", "{ medium: Memory, persistent:");
         assert!(Config::from_yaml(&memory).is_err());
+
+        let p = Config::from_yaml(&ok)
+            .unwrap()
+            .build
+            .state_volume
+            .persistent
+            .unwrap();
+        assert_eq!(p.min_free_bytes(), Some(20 * (1 << 30) / 100 * 25));
+        let free = |v: &str| ok.replace("size: 20Gi", &format!("size: 20Gi, minFreeSpace: {v}"));
+        for (v, bytes) in [
+            ("\"30%\"", 6_442_450_944),
+            ("8Gi", 8 << 30),
+            ("\"12.5%\"", 2_684_354_560),
+        ] {
+            let p = Config::from_yaml(&free(v))
+                .unwrap()
+                .build
+                .state_volume
+                .persistent
+                .unwrap();
+            assert_eq!(p.min_free_bytes(), Some(bytes), "{v}");
+        }
+        for bad in ["\"0%\"", "\"90%\"", "18Gi", "\"-5%\"", "lots", "\"x%\""] {
+            let err = Config::from_yaml(&free(bad)).unwrap_err().to_string();
+            assert!(err.contains("minFreeSpace"), "{bad}: {err}");
+        }
 
         let kata = HOMELAB.replace(
             "runtimeClassName: kata }",

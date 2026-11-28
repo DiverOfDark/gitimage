@@ -8,7 +8,7 @@ pub mod keys;
 pub use config::Config;
 pub use gitimage::{
     BuildArg, BuildOutcome, BuildRecord, BuildSecret, BuildSpec, Condition, GitImage, GitImageSpec,
-    GitImageStatus, OnNewCommit, Resources, SecretKeyRef, SecretRef,
+    GitImageStatus, OnNewCommit, Resources, SecretKeyRef, SecretRef, StateVolumeStatus,
 };
 
 /// API group and version of every GitImage resource.

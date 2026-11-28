@@ -79,7 +79,9 @@ build:
   # init container and mounted by BuildKit (needs privileged or privilegedInSandbox).
   # medium: Memory (tmpfs) also works but counts against the build pod's memory.
   # persistent: one PVC per GitImage (<name>-buildkit), kept between its builds, so BuildKit's
-  # local cache and RUN --mount=type=cache survive; BuildKit keeps it within 80% of `size`. With
+  # local cache and RUN --mount=type=cache survive. Each build first prunes it to at most 80% of
+  # `size` used and `minFreeSpace` free (default 25%), or more after builds that grew it more; a
+  # build that fills it anyway is retried once on an emptied volume. With
   # `block` too, the PVC is volumeMode: Block, sized here, and formatted only once; give block
   # just fsType/formatImage then. Excludes medium and sizeLimit.
   stateVolume:
@@ -95,6 +97,7 @@ build:
     # persistent:
     #   size: 20Gi
     #   storageClassName: local-path         # default class if unset
+    #   minFreeSpace: 25%                    # or a quantity, e.g. 8Gi
     # Extra labels/annotations on the state PVCs (block or persistent): they hold only a
     # rebuildable cache, so keep them out of backups.
     labels: {}
