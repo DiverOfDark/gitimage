@@ -189,6 +189,42 @@ pub struct GitImageStatus {
     /// Last `gitimage.dev/hook-at` value acted on (debounce).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub handled_hook_at: Option<String>,
+    /// The persistent BuildKit state volume (`build.stateVolume.persistent`) as the newest
+    /// build found it, once pruned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_volume: Option<StateVolumeStatus>,
+}
+
+/// The persistent BuildKit state volume at the start of a build, after pruning. Reported by the
+/// build pod; sizes in bytes.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct StateVolumeStatus {
+    /// The build that reported it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<String>,
+    /// RFC 3339.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_at: Option<String>,
+    #[serde(default)]
+    pub size_bytes: u64,
+    #[serde(default)]
+    pub used_bytes: u64,
+    #[serde(default)]
+    pub free_bytes: u64,
+    /// Freed before the build.
+    #[serde(default)]
+    pub pruned_bytes: u64,
+    /// Free space the prune aimed for: `minFreeSpace`, or more when recent builds grew the
+    /// state by more.
+    #[serde(default)]
+    pub want_free_bytes: u64,
+    /// The most any of the last 5 builds grew the state by.
+    #[serde(default)]
+    pub peak_bytes: u64,
+    /// Why the volume was emptied before the build, if it was.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub emptied: Option<String>,
 }
 
 impl GitImageStatus {
@@ -285,6 +321,9 @@ pub mod failure_reasons {
     pub const CLONE_FAILED: &str = "CloneFailed";
     pub const BUILD_FAILED: &str = "BuildFailed";
     pub const PUSH_FAILED: &str = "PushFailed";
+    /// BuildKit's state volume ran out of space. With `build.stateVolume.persistent` the build
+    /// is retried once on an emptied volume first.
+    pub const OUT_OF_SPACE: &str = "OutOfSpace";
     pub const DEADLINE_EXCEEDED: &str = "DeadlineExceeded";
     pub const SECRET_MISSING: &str = "SecretMissing";
     /// The Job could not create its pod, e.g. Pod Security admission forbids it.

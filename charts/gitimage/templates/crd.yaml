@@ -267,6 +267,60 @@ spec:
                 description: sha whose image is current.
                 nullable: true
                 type: string
+              stateVolume:
+                description: |-
+                  The persistent BuildKit state volume (`build.stateVolume.persistent`) as the newest
+                  build found it, once pruned.
+                nullable: true
+                properties:
+                  emptied:
+                    description: Why the volume was emptied before the build, if it was.
+                    nullable: true
+                    type: string
+                  freeBytes:
+                    default: 0
+                    format: uint64
+                    minimum: 0.0
+                    type: integer
+                  observedAt:
+                    description: RFC 3339.
+                    nullable: true
+                    type: string
+                  peakBytes:
+                    default: 0
+                    description: The most any of the last 5 builds grew the state by.
+                    format: uint64
+                    minimum: 0.0
+                    type: integer
+                  prunedBytes:
+                    default: 0
+                    description: Freed before the build.
+                    format: uint64
+                    minimum: 0.0
+                    type: integer
+                  revision:
+                    description: The build that reported it.
+                    nullable: true
+                    type: string
+                  sizeBytes:
+                    default: 0
+                    format: uint64
+                    minimum: 0.0
+                    type: integer
+                  usedBytes:
+                    default: 0
+                    format: uint64
+                    minimum: 0.0
+                    type: integer
+                  wantFreeBytes:
+                    default: 0
+                    description: |-
+                      Free space the prune aimed for: `minFreeSpace`, or more when recent builds grew the
+                      state by more.
+                    format: uint64
+                    minimum: 0.0
+                    type: integer
+                type: object
               webhookUrl:
                 description: Pre-authorized push-hook URL to paste into the git host.
                 nullable: true

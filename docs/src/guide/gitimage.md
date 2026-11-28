@@ -27,13 +27,14 @@ spec:
 | `latestRevision` | newest commit seen on the ref |
 | `revision` | commit whose image is current |
 | `image` | `<pull host>/<namespace>/<name>@sha256:...` |
-| `builds[]` | newest first, up to 10: `revision`, `outcome` (`Built`, `Reused`, `Superseded`, `Failed`), `digest`, `contextTree`, `sourceRevision`, `reason`, `attempt` (the build Job's), `finishedAt` |
+| `builds[]` | newest first, up to 10: `revision`, `outcome` (`Built`, `Reused`, `Superseded`, `Failed`), `digest`, `contextTree`, `sourceRevision`, `reason`, `message` (the error, kept after the build log is gone), `attempt` (the build Job's), `finishedAt` |
+| `stateVolume` | with `build.stateVolume.persistent`: the BuildKit state volume when the newest build started, in bytes: `sizeBytes`, `usedBytes`, `freeBytes`, `prunedBytes`, `wantFreeBytes`, `peakBytes` (the most a recent build grew it by), `emptied` (why it was emptied) |
 | `webhookURL` | push-hook URL to paste into the git host (needs `hooks.baseURL`) |
 | `handledRebuild` | the last `gitimage.dev/rebuild` value whose rebuild finished; a different annotation value is a rebuild still to do |
 | `conditions` | `Ready`, `Building` (message = current BuildKit step), `Failed` (reason) |
 
 Failure reasons: `ResolveFailed`, `SecretMissing`, `CloneFailed`, `BuildFailed`, `PushFailed`,
-`DeadlineExceeded`, `PodCreationFailed`, `ReconcileError`.
+`OutOfSpace`, `DeadlineExceeded`, `PodCreationFailed`, `ReconcileError`.
 
 `ReconcileError` means the controller itself failed, for example because the API server
 rejected the build Job or a quota forbids it; the message is the API server's. The controller

@@ -12,6 +12,22 @@ export interface BuildRecord {
   finishedAt: string;
 }
 
+/** The persistent BuildKit state volume as the newest build found it, once pruned (bytes). */
+export interface StateVolume {
+  revision?: string;
+  observedAt?: string;
+  sizeBytes: number;
+  usedBytes: number;
+  freeBytes: number;
+  prunedBytes: number;
+  /** Free space the prune aimed for: minFreeSpace, or more after builds that grew it more. */
+  wantFreeBytes: number;
+  /** The most any of the last 5 builds grew the state by. */
+  peakBytes: number;
+  /** Why the volume was emptied before that build. */
+  emptied?: string;
+}
+
 export interface GitImage {
   namespace: string;
   name: string;
@@ -32,6 +48,7 @@ export interface GitImage {
   createdAt?: string;
   gatedPods: number;
   builds: BuildRecord[];
+  stateVolume?: StateVolume;
 }
 
 export interface Workload {
@@ -128,6 +145,17 @@ export async function get<T>(path: string): Promise<T> {
 }
 
 export const short = (sha?: string) => (sha ? sha.slice(0, 7) : '');
+
+/** 31234567890 -> `31.2 GB` (powers of 1000, as `df -H` and the build log print them). */
+export function bytes(n: number): string {
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let i = 0;
+  while (n >= 1000 && i < units.length - 1) {
+    n /= 1000;
+    i++;
+  }
+  return i === 0 ? `${n} B` : `${n.toFixed(n < 10 ? 2 : 1)} ${units[i]}`;
+}
 
 /** `step 4/12 RUN npm ci` -> { n: 4, of: 12, text: 'RUN npm ci' } */
 export function parseStep(step?: string): { n?: number; of?: number; text: string } {

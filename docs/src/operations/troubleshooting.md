@@ -9,6 +9,7 @@
 | `Failed` / `ReconcileError` | the message is the API server's answer to the controller (an invalid Job, a quota, missing RBAC); the controller log has the same error |
 | `Failed` / `BuildFailed` | `kubectl logs job/<name>-<sha7> -c buildkit` |
 | `Failed` / `PushFailed` | controller logs (storage errors), then the build log |
+| `Failed` / `OutOfSpace` | the build needs more than BuildKit's state volume: raise `build.stateVolume.persistent.size` (or `sizeLimit`/`block.size`); with `persistent` it already failed once more on an emptied volume |
 | Annotated pod is created without a gate or digest | `kubectl get mutatingwebhookconfiguration gitimage -o yaml`: `caBundle` set? webhook pods ready? |
 | Every build spends ~2 min in `load metadata for docker.io/...` | a registry mirror build pods cannot reach, often one behind an in-cluster ingress controller: [In-cluster registry mirrors](configuration.md#in-cluster-registry-mirrors) |
 | Pull fails in s3 mode | `kubectl -n gitimage-system get ds gitimage-node`: NotReady means S3 is unreachable or `port 25050 in use on 127.0.0.1` |

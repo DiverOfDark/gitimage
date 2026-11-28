@@ -83,7 +83,7 @@ pub fn check_job(cfg: &Config, ns: &str) -> Job {
         ..Default::default()
     };
     crate::job::pod_overlay(cfg, &mut pod, &mut c);
-    crate::job::attach_state_volume(cfg, &mut pod, &mut c, None);
+    crate::job::attach_state_volume(cfg, &mut pod, &mut c, None, false);
     pod.containers = vec![c];
     let labels = BTreeMap::from([
         (

@@ -78,6 +78,8 @@ pub struct BuildParams {
     /// The GitImage's `gitimage.dev/rebuild` value, empty without one: build arg
     /// `GITIMAGE_REBUILD`.
     pub rebuild: String,
+    /// Empty the persistent state volume first: the retry of a build that ran out of space.
+    pub fresh_state: bool,
 }
 
 /// `<name>-<sha7>[-<attempt>]`, kept within 63 characters (Job names become label values).
@@ -381,17 +383,35 @@ pub fn state_claim(gi: &GitImage, cfg: &Config) -> Option<PersistentVolumeClaim>
     })
 }
 
-/// `buildkitd.toml` garbage collection for a persistent state volume: keep at most 80% of it,
-/// so the volume never fills up, and never prune below 10%. Unlike BuildKit's default rules,
-/// cache mounts are not capped at 512MB: keeping them is the point of a persistent volume.
+/// How much of a persistent state volume BuildKit may use, in bytes.
+struct StateLimits {
+    /// Never pruned below this: 10% of `size`.
+    reserved: u64,
+    /// Pruned down to this: 80% of `size`.
+    max_used: u64,
+    /// Pruned until this much is free: `minFreeSpace`.
+    min_free: u64,
+}
+
+fn state_limits(cfg: &Config) -> Option<StateLimits> {
+    let p = cfg.build.state_volume.persistent.as_ref()?;
+    let bytes = p.size_bytes()?;
+    Some(StateLimits {
+        reserved: bytes / 10,
+        max_used: bytes / 10 * 8,
+        min_free: p.min_free_bytes()?,
+    })
+}
+
+/// `buildkitd.toml` garbage collection for a persistent state volume, to the same
+/// [`StateLimits`] as the prune before each build (`state.sh`). Unlike BuildKit's default
+/// rules, cache mounts are not capped at 512MB: keeping them is the point of a persistent volume.
 fn gc_policy(cfg: &Config) -> Option<String> {
-    let bytes = cfg
-        .build
-        .state_volume
-        .persistent
-        .as_ref()
-        .and_then(|p| gitimage_api::config::quantity_bytes(&p.size))?;
-    let (reserved, max) = (bytes / 10, bytes / 10 * 8);
+    let StateLimits {
+        reserved,
+        max_used,
+        min_free,
+    } = state_limits(cfg)?;
     Some(format!(
         r#"
 # build.stateVolume.persistent
@@ -402,23 +422,64 @@ fn gc_policy(cfg: &Config) -> Option<String> {
 [[worker.oci.gcpolicy]]
   keepDuration = "1440h"
   reservedSpace = "{reserved}"
-  maxUsedSpace = "{max}"
+  maxUsedSpace = "{max_used}"
+  minFreeSpace = "{min_free}"
 [[worker.oci.gcpolicy]]
   all = true
   reservedSpace = "{reserved}"
-  maxUsedSpace = "{max}"
+  maxUsedSpace = "{max_used}"
+  minFreeSpace = "{min_free}"
 "#
     ))
 }
 
+/// Prepares a persistent state volume before each build and records how much the build grows
+/// it: see `state.sh`, shipped in the build ConfigMap.
+pub const STATE_SCRIPT: &str = include_str!("state.sh");
+const STATE_SCRIPT_PATH: &str = "/etc/gitimage/state.sh";
+
+/// Wraps BuildKit's `command` in `state.sh` for a persistent state volume; `fresh` empties the
+/// volume first (the retry of a build that ran out of space).
+fn with_state_script(
+    cfg: &Config,
+    state_dir: &str,
+    claim: &str,
+    fresh: bool,
+    command: Vec<String>,
+) -> Vec<String> {
+    let Some(StateLimits {
+        reserved,
+        max_used,
+        min_free,
+    }) = state_limits(cfg)
+    else {
+        return command;
+    };
+    let mut wrapped = vec![
+        "sh".to_string(),
+        STATE_SCRIPT_PATH.into(),
+        state_dir.into(),
+        claim.into(),
+        if fresh { "fresh" } else { "keep" }.into(),
+        reserved.to_string(),
+        max_used.to_string(),
+        min_free.to_string(),
+        "--".into(),
+    ];
+    wrapped.extend(command);
+    wrapped
+}
+
 /// Formats the state device unless it already holds a filesystem that `e2fsck` can repair (a
-/// build killed mid-write leaves an unclean journal).
+/// build killed mid-write leaves an unclean journal). No blocks are reserved for root: a cache
+/// has no use for them, and BuildKit's free-space limits then match `df`.
 fn format_once_script(fs_type: &str) -> String {
     format!(
         "if dumpe2fs -h {STATE_DEVICE} >/dev/null 2>&1; then \
-         e2fsck -p {STATE_DEVICE}; rc=$?; [ $rc -lt 4 ] && exit 0; \
+         e2fsck -p {STATE_DEVICE}; rc=$?; \
+         [ $rc -lt 4 ] && {{ tune2fs -m 0 {STATE_DEVICE} >/dev/null; exit 0; }}; \
          echo \"e2fsck exited $rc: reformatting the BuildKit state volume\" >&2; fi; \
-         exec mkfs.{fs_type} -q -F -E nodiscard {STATE_DEVICE}"
+         exec mkfs.{fs_type} -q -F -m 0 -E nodiscard {STATE_DEVICE}"
     )
 }
 
@@ -433,6 +494,7 @@ pub fn attach_state_volume(
     pod: &mut PodSpec,
     buildkit: &mut Container,
     claim: Option<&str>,
+    fresh: bool,
 ) {
     let sv = &cfg.build.state_volume;
     let claim = claim.filter(|_| sv.persistent.is_some());
@@ -476,6 +538,21 @@ pub fn attach_state_volume(
         }
     }
     volumes.push(volume);
+    // Inside the mount below: the script needs the mounted state.
+    if let Some(name) = claim {
+        let original = buildkit.command.take().unwrap_or_default();
+        buildkit.command = Some(with_state_script(cfg, state_dir, name, fresh, original));
+        buildkit
+            .volume_mounts
+            .get_or_insert_with(Vec::new)
+            .push(VolumeMount {
+                name: "build-config".into(),
+                mount_path: STATE_SCRIPT_PATH.into(),
+                sub_path: Some("state.sh".into()),
+                read_only: Some(true),
+                ..Default::default()
+            });
+    }
     let Some(b) = &sv.block else {
         buildkit
             .volume_mounts
@@ -497,6 +574,8 @@ pub fn attach_state_volume(
             format!("mkfs.{}", b.fs_type),
             "-q".into(),
             "-F".into(),
+            "-m".into(),
+            "0".into(),
             "-E".into(),
             "nodiscard".into(),
             STATE_DEVICE.into(),
@@ -799,7 +878,13 @@ pub fn build_job(gi: &GitImage, cfg: &Config, p: &BuildParams) -> Job {
         ..Default::default()
     };
     pod_overlay(cfg, &mut pod, &mut buildkit);
-    attach_state_volume(cfg, &mut pod, &mut buildkit, Some(&state_claim_name(&name)));
+    attach_state_volume(
+        cfg,
+        &mut pod,
+        &mut buildkit,
+        Some(&state_claim_name(&name)),
+        p.fresh_state,
+    );
     pod.containers = vec![buildkit];
 
     let mut annotations = BTreeMap::new();
@@ -868,8 +953,9 @@ pub fn build_configmap(ns: &str, cfg: &Config, ca_pem: &str) -> ConfigMap {
         "[registry.\"{}\"]\n  ca = [\"/etc/gitimage/ca.crt\"]\n",
         cfg.push_endpoint.authority()
     );
-    if let Some(gc) = gc_policy(cfg) {
-        toml.push_str(&gc);
+    let gc = gc_policy(cfg);
+    if let Some(gc) = &gc {
+        toml.push_str(gc);
     }
     if !cfg.build.buildkitd_config.trim().is_empty() {
         toml.push_str("\n# build.buildkitdConfig\n");
@@ -886,10 +972,16 @@ pub fn build_configmap(ns: &str, cfg: &Config, ca_pem: &str) -> ConfigMap {
             )])),
             ..Default::default()
         },
-        data: Some(BTreeMap::from([
-            ("ca.crt".into(), ca_pem.into()),
-            ("buildkitd.toml".into(), toml),
-        ])),
+        data: Some({
+            let mut data = BTreeMap::from([
+                ("ca.crt".to_string(), ca_pem.to_string()),
+                ("buildkitd.toml".to_string(), toml),
+            ]);
+            if gc.is_some() {
+                data.insert("state.sh".into(), STATE_SCRIPT.into());
+            }
+            data
+        }),
         ..Default::default()
     }
 }
@@ -1033,6 +1125,7 @@ build:
             gitimage_image: "ghcr.io/diverofdark/gitimage:test".into(),
             secrets: vec![("npmrc".into(), "npm-token".into(), "token".into())],
             rebuild: String::new(),
+            fresh_state: false,
         }
     }
 
@@ -1338,6 +1431,7 @@ build:
         cfg.build.state_volume.persistent = Some(gitimage_api::config::PersistentStateVolume {
             size: "20Gi".into(),
             storage_class_name: Some("local-path".into()),
+            min_free_space: None,
         });
         if block {
             cfg.build_policy.isolation.mode = IsolationMode::Privileged;
@@ -1364,10 +1458,11 @@ build:
         let mut cfg = config();
         persistent(&mut cfg, false);
         let job = build_job(&gitimage(), &cfg, &params());
-        // 20Gi: keep 10% at least, 80% at most.
+        // 20Gi: keep 10% at least, 80% at most, and 25% free.
         let toml = build_configmap("team", &cfg, "PEM").data.unwrap()["buildkitd.toml"].clone();
         assert!(toml.contains("reservedSpace = \"2147483648\""), "{toml}");
         assert!(toml.contains("maxUsedSpace = \"17179869184\""), "{toml}");
+        assert!(toml.contains("minFreeSpace = \"5368709100\""), "{toml}");
         assert!(!toml.contains("exec.cachemount"), "{toml}");
         let plain =
             build_configmap("team", &config(), "PEM").data.unwrap()["buildkitd.toml"].clone();
@@ -1391,6 +1486,53 @@ build:
                 .any(|m| m.name == "buildkit-state"
                     && m.mount_path == "/home/user/.local/share/buildkit")
         );
+        // state.sh runs first, to the same limits as the GC, then the commit-time wrapper.
+        let bk = &pod.containers[0];
+        let cmd = bk.command.as_ref().unwrap();
+        assert_eq!(
+            &cmd[..9],
+            &[
+                "sh",
+                "/etc/gitimage/state.sh",
+                "/home/user/.local/share/buildkit",
+                "myapp-buildkit",
+                "keep",
+                "2147483648",
+                "17179869184",
+                "5368709100",
+                "--"
+            ]
+        );
+        assert!(cmd[11].contains("GITIMAGE_COMMIT_TIME"));
+        assert_eq!(cmd[12], "buildctl-daemonless.sh");
+        assert!(
+            bk.volume_mounts
+                .as_ref()
+                .unwrap()
+                .iter()
+                .any(|m| m.name == "build-config"
+                    && m.mount_path == "/etc/gitimage/state.sh"
+                    && m.sub_path.as_deref() == Some("state.sh"))
+        );
+        let data = build_configmap("team", &cfg, "PEM").data.unwrap();
+        assert_eq!(data["state.sh"], STATE_SCRIPT);
+        assert!(
+            !build_configmap("team", &config(), "PEM")
+                .data
+                .unwrap()
+                .contains_key("state.sh")
+        );
+        // The retry of a build that ran out of space empties the volume first.
+        let fresh = build_job(
+            &gitimage(),
+            &cfg,
+            &BuildParams {
+                fresh_state: true,
+                ..params()
+            },
+        );
+        let fresh = fresh.spec.unwrap().template.spec.unwrap();
+        assert_eq!(fresh.containers[0].command.as_ref().unwrap()[4], "fresh");
 
         let pvc = state_claim(&gitimage(), &cfg).unwrap();
         assert_eq!(pvc.metadata.name.as_deref(), Some("myapp-buildkit"));
@@ -1436,13 +1578,22 @@ build:
         );
         assert!(script.contains("e2fsck -p /dev/buildkit-state"), "{script}");
         assert!(
-            script.ends_with("exec mkfs.ext4 -q -F -E nodiscard /dev/buildkit-state"),
+            script.contains("tune2fs -m 0 /dev/buildkit-state"),
             "{script}"
         );
         assert!(
-            pod.containers[0].command.as_ref().unwrap()[2]
-                .contains("mount -t ext4 -o noatime /dev/buildkit-state /var/lib/buildkit")
+            script.ends_with("exec mkfs.ext4 -q -F -m 0 -E nodiscard /dev/buildkit-state"),
+            "{script}"
         );
+        // Mount, then ready the mounted state, then build.
+        let cmd = pod.containers[0].command.as_ref().unwrap();
+        assert!(cmd[2].contains("mount -t ext4 -o noatime /dev/buildkit-state /var/lib/buildkit"));
+        assert_eq!(
+            &cmd[3..6],
+            &["sh", "/etc/gitimage/state.sh", "/var/lib/buildkit"]
+        );
+        assert!(cmd[14].contains("GITIMAGE_COMMIT_TIME"));
+        assert_eq!(cmd[15], "buildctl-daemonless.sh");
 
         let pvc = state_claim(&gitimage(), &cfg).unwrap();
         assert_eq!(pvc.spec.unwrap().volume_mode.as_deref(), Some("Block"));

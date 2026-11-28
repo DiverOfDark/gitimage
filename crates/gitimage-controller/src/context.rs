@@ -20,6 +20,8 @@ use crate::metrics::Metrics;
 pub struct JobProgress {
     pub step: Option<String>,
     pub error: Option<String>,
+    /// The persistent state volume as `state.sh` reported it.
+    pub state: Option<gitimage_api::StateVolumeStatus>,
 }
 
 pub struct Ctx {

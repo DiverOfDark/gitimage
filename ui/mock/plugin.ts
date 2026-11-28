@@ -100,6 +100,7 @@ const R = {
   apiOld: sha('e2b9140f6d'),
   workerBad: sha('a61f3d9028'),
   workerGood: sha('07c5be4419'),
+  workerOos: sha('9e01c4d7aa'),
   docs: sha('d3e8f6027b'),
   fresh: sha('4b9a7c10ee'),
 };
@@ -143,8 +144,14 @@ function gitimages() {
       createdAt: iso(40 * D), gatedPods: 0,
       builds: [
         { revision: R.workerBad, outcome: 'Failed', reason: 'BuildFailed', message: 'step 5/8 RUN cargo build --release: process "/bin/sh -c cargo build --release" did not complete successfully: exit code: 101', finishedAt: iso(12 * MIN) },
+        { revision: R.workerOos, outcome: 'Failed', reason: 'OutOfSpace', message: 'ran out of space on an emptied BuildKit state volume: the build needs more than 40Gi. Raise build.stateVolume.persistent.size. gitimage: no space left on device: the build filled the BuildKit state volume (12.3MB of 42.9GB free)', finishedAt: iso(2 * H) },
         { revision: R.workerGood, outcome: 'Built', digest: dg('07c5'), finishedAt: iso(4 * D) },
       ],
+      stateVolume: {
+        revision: R.workerBad, observedAt: iso(20 * MIN), sizeBytes: 42_949_672_960, usedBytes: 31_206_000_000,
+        freeBytes: 11_743_000_000, prunedBytes: 4_120_000_000, wantFreeBytes: 10_737_418_240, peakBytes: 7_310_000_000,
+        emptied: 'the last build ran out of space',
+      },
     },
     {
       namespace: 'docs', name: 'handbook', url: 'https://gitea.example.com/team/handbook.git', ref: 'v2.3.0',

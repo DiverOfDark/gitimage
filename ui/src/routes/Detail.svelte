@@ -1,7 +1,7 @@
 <script lang="ts">
   import ArrowLeft from '@lucide/svelte/icons/arrow-left';
   import Copy from '@lucide/svelte/icons/copy';
-  import { ApiError, get, parseStep, short, type BuildRecord, type Detail } from '../lib/api';
+  import { ApiError, bytes, get, parseStep, short, type BuildRecord, type Detail } from '../lib/api';
   import LogViewer from '../lib/LogViewer.svelte';
   import { detailHref, link } from '../lib/router.svelte';
   import { app } from '../lib/store.svelte';
@@ -51,6 +51,16 @@
   // A build that already ended has its pod now or never again: do not wait for one.
   const awaited = $derived(selected === inProgress || !gi?.builds.some((b) => b.revision === selected));
   const step = $derived(parseStep(gi?.step));
+  /** Why the selected build failed: kept in status, while its log lasts an hour. */
+  const selectedFailure = $derived.by(() => {
+    const r = gi?.builds.find((b) => b.revision === selected);
+    if (r?.outcome !== 'Failed' || !r.message) return null;
+    // The banner above already says it for the newest commit.
+    if (gi?.failure?.message.includes(r.message)) return null;
+    return r;
+  });
+  const sv = $derived(gi?.stateVolume);
+  const svUsed = $derived(sv && sv.sizeBytes ? Math.min(100, (sv.usedBytes / sv.sizeBytes) * 100) : 0);
   const upToDate = $derived(detail?.workloads.filter((w) => w.upToDate).length ?? 0);
   const rolled = $derived(
     !detail || detail.workloads.length === 0
@@ -167,6 +177,12 @@
 
   <div class="mt-5 grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_21rem]">
     <div class="min-w-0">
+      {#if selectedFailure}
+        <div class="mb-4 rounded-lg border border-failed/40 bg-failed-soft px-5 py-3 text-sm text-failed">
+          <span class="font-semibold">{selectedFailure.reason ?? 'Failed'}</span>:
+          <span class="break-words">{selectedFailure.message}</span>
+        </div>
+      {/if}
       {#if selected}
         {#key `${selected}:${attempt}`}
           <LogViewer {namespace} {name} revision={selected} wait={awaited} />
@@ -208,8 +224,11 @@
                   class="size-2 shrink-0 rounded-full {b.outcome === 'Failed' ? 'bg-failed' : b.outcome === 'Superseded' ? 'bg-input' : 'bg-ready'}"
                 ></span>
                 <Sha sha={b.revision} />
-                <span class="min-w-0 flex-1 truncate {b.outcome === 'Failed' ? 'text-failed' : ''}">
-                  {outcome[b.outcome]}{#if b.sourceRevision}&nbsp;from {short(b.sourceRevision)}{/if}
+                <span
+                  class="min-w-0 flex-1 truncate {b.outcome === 'Failed' ? 'text-failed' : ''}"
+                  title={b.outcome === 'Failed' ? b.message : undefined}
+                >
+                  {outcome[b.outcome]}{#if b.outcome === 'Failed' && b.reason}: {b.reason}{/if}{#if b.sourceRevision}&nbsp;from {short(b.sourceRevision)}{/if}
                 </span>
                 <span class="shrink-0 text-muted-foreground">{ago(b.finishedAt)}</span>
               </a>
@@ -223,6 +242,35 @@
           The last five builds are kept. A log stays readable for one hour after its build ends.
         </p>
       </section>
+
+      {#if sv}
+        <section class="rounded-lg border bg-card">
+          <h2 class="border-b px-4 py-2.5 font-medium">Build cache</h2>
+          <div class="space-y-2 px-4 py-3 text-sm">
+            <div class="flex items-baseline justify-between gap-2">
+              <span>{bytes(sv.usedBytes)} of {bytes(sv.sizeBytes)} used</span>
+              <span class="text-muted-foreground">{bytes(sv.freeBytes)} free</span>
+            </div>
+            <div class="h-2 overflow-hidden rounded-full bg-muted" role="meter" aria-valuenow={Math.round(svUsed)} aria-valuemin={0} aria-valuemax={100} aria-label="Build cache used">
+              <div class="h-full rounded-full {svUsed > 90 ? 'bg-failed' : svUsed > 75 ? 'bg-building' : 'bg-ready'}" style="width: {svUsed}%"></div>
+            </div>
+            <p class="text-muted-foreground">
+              When <Sha sha={sv.revision ?? ''} /> started{#if sv.observedAt}, {ago(sv.observedAt)}{/if}: pruned
+              {bytes(sv.prunedBytes)} to leave {bytes(sv.wantFreeBytes)} free. Recent builds grew it by up to
+              {bytes(sv.peakBytes)}.
+            </p>
+            {#if sv.emptied}
+              <p class="text-building">Emptied before that build: {sv.emptied}.</p>
+            {/if}
+            {#if sv.freeBytes < sv.wantFreeBytes}
+              <p class="text-failed">
+                Could not free {bytes(sv.wantFreeBytes)}: recent builds need more than this volume holds. Raise
+                <code class="font-mono text-[0.8125rem]">build.stateVolume.persistent.size</code>.
+              </p>
+            {/if}
+          </div>
+        </section>
+      {/if}
 
       <section class="rounded-lg border bg-card">
         <h2 class="border-b px-4 py-2.5 font-medium">Workloads using this image</h2>
