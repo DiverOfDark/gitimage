@@ -65,8 +65,8 @@ storage:
     pathStyle: true
 
 build:
-  image: moby/buildkit:v0.34.2-rootless
-  rootfulImage: moby/buildkit:v0.34.2
+  image: moby/buildkit:v0.35.0-rootless
+  rootfulImage: moby/buildkit:v0.35.0
   activeDeadline: 1h
   platforms: [linux/amd64]
   # max | min | off
